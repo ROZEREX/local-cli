@@ -18,19 +18,39 @@ export function sanitizeForInput(s: string): string {
 
 // Read the system clipboard. Used for Ctrl+V paste, because terminals in raw
 // mode deliver Ctrl+V as a control byte (0x16) rather than the clipboard text.
-export async function readClipboard(): Promise<string> {
-  const cmd =
-    platform() === "darwin" ? ["pbpaste"] :
-    platform() === "win32" ? ["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"] :
-    ["xclip", "-selection", "clipboard", "-o"];
+// Linux clipboard candidates in priority order:
+//   xclip  — most common on X11
+//   xsel   — common alternative on X11
+//   wl-paste — Wayland (GNOME/KDE on modern distros)
+const LINUX_CLIPBOARD_CMDS = [
+  ["xclip", "-selection", "clipboard", "-o"],
+  ["xsel", "--clipboard", "--output"],
+  ["wl-paste", "--no-newline"],
+];
 
+export async function readClipboard(): Promise<string> {
+  if (platform() === "darwin") {
+    return (await spawnClipboard(["pbpaste"])) ?? "";
+  }
+  if (platform() === "win32") {
+    return (await spawnClipboard(["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"])) ?? "";
+  }
+  // Linux — try each tool until one succeeds.
+  for (const cmd of LINUX_CLIPBOARD_CMDS) {
+    const text = await spawnClipboard(cmd);
+    if (text !== null) return text;
+  }
+  return "";
+}
+
+async function spawnClipboard(cmd: string[]): Promise<string | null> {
   try {
     const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore" });
     const text = await new Response(proc.stdout).text();
-    await proc.exited;
-    // Normalize newlines and trim the single trailing newline these tools add.
+    const code = await proc.exited;
+    if (code !== 0) return null;
     return text.replace(/\r\n/g, "\n").replace(/\n$/, "");
   } catch {
-    return "";
+    return null;
   }
 }

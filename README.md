@@ -25,6 +25,9 @@ save them yourself.
 
 - [Bun](https://bun.sh) (the runtime — this project uses it instead of Node)
 - [Ollama](https://ollama.com) running locally, or any OpenAI-compatible API
+- **Linux only:** `xclip`, `xsel`, or `wl-paste` for Ctrl+V clipboard paste
+  (`sudo apt install xclip` / `sudo pacman -S xclip`). Everything else works
+  without it — paste just won't pull from the system clipboard.
 
 ```bash
 # pull a model
