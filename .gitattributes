@@ -1,0 +1,7 @@
+# Normalize line endings in the repo to LF; checkout converts to
+# the platform default (CRLF on Windows, LF everywhere else).
+* text=auto
+*.ts  text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf
+*.md  text eol=lf

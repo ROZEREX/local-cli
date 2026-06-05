@@ -1,0 +1,41 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# Claude Code local settings — these hold machine-specific paths and
+# tool-call permissions, never commit them (each dev creates their own).
+.claude/settings.local.json
+
+# Runtime data — lives in ~/.local-cli/ outside the repo, never here.
+.local-cli/

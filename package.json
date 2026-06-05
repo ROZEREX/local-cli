@@ -1,0 +1,36 @@
+{
+  "name": "local-cli",
+  "version": "0.1.0",
+  "module": "index.ts",
+  "type": "module",
+  "bin": {
+    "local-cli": "index.ts",
+    "ccli": "index.ts"
+  },
+  "scripts": {
+    "start": "bun run index.ts",
+    "test": "bun run test-tools.ts && bun run test-think.ts && bun run test-llm-loop.ts && bun run test-features.ts && bun run test-prompted.ts && bun run test-edit.ts && bun run test-diff.ts && bun run test-highlight.ts && bun run test-files.ts && bun run test-usage.ts && bun run test-thinking.ts && bun run test-parallel.ts && bun run test-input.tsx && bun run test-files-ui.tsx && bun run test-chats-ui.tsx && bun run test-ui-render.tsx && bun run test-ui-flow.tsx && bun run test-ui-features.tsx",
+    "test:live": "bun run test-deepseek-live.ts",
+    "typecheck": "tsc --noEmit --skipLibCheck"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.16",
+    "ink-testing-library": "^4.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "chalk": "5",
+    "glob": "^13.0.6",
+    "ink": "^7.0.5",
+    "ink-big-text": "^2.0.0",
+    "ink-gradient": "^4.0.1",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "minimatch": "^10.2.5",
+    "openai": "^6.42.0",
+    "react": "^19.2.7"
+  }
+}
