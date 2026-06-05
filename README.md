@@ -21,25 +21,120 @@ printing a markdown block instead; raw bodies fix that, so the model reliably
 **creates the actual files** (complete, untruncated) rather than telling you to
 save them yourself.
 
-## Requirements
+## Setup
 
-- [Bun](https://bun.sh) (the runtime — this project uses it instead of Node)
-- [Ollama](https://ollama.com) running locally, or any OpenAI-compatible API
-- **Linux only:** `xclip`, `xsel`, or `wl-paste` for Ctrl+V clipboard paste
-  (`sudo apt install xclip` / `sudo pacman -S xclip`). Everything else works
-  without it — paste just won't pull from the system clipboard.
+### Windows
 
-```bash
-# pull a model
-ollama pull qwen3
-ollama pull qwen2.5-coder    # great for coding
-ollama serve                 # if not already running
+**1. Install Bun**
+
+Open PowerShell and run:
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+Restart your terminal after. Verify with `bun --version`.
+
+**2. Install Ollama**
+
+Download and run the installer from **https://ollama.com/download/windows**.
+After install, Ollama runs as a background service automatically.
+
+**3. Clone and install**
+
+Use **Windows Terminal** (recommended — best color support) or PowerShell:
+```powershell
+git clone https://github.com/YOUR-USERNAME/local-cli.git
+cd local-cli
+bun install
 ```
 
-## Install
+**4. Pull a model and run**
+
+```powershell
+ollama pull qwen2.5-coder    # recommended for coding tasks
+ollama pull qwen3            # great for reasoning
+bun run start
+```
+
+---
+
+### Linux
+
+**1. Install Bun**
 
 ```bash
+curl -fsSL https://bun.sh/install | bash
+```
+Restart your terminal (or `source ~/.bashrc`). Verify with `bun --version`.
+
+**2. Install Ollama**
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+This installs Ollama as a systemd service — it starts automatically on boot.
+To start it manually: `ollama serve`.
+
+**3. Install clipboard support** *(optional — for Ctrl+V paste)*
+
+```bash
+# Ubuntu / Debian — X11
+sudo apt install xclip
+
+# Arch
+sudo pacman -S xclip
+
+# Wayland (GNOME, KDE) — usually pre-installed
+sudo apt install wl-clipboard
+```
+Everything works without this — only Ctrl+V clipboard paste needs it.
+
+**4. Clone and install**
+
+```bash
+git clone https://github.com/YOUR-USERNAME/local-cli.git
+cd local-cli
 bun install
+```
+
+**5. Pull a model and run**
+
+```bash
+ollama pull qwen2.5-coder    # recommended for coding tasks
+ollama pull qwen3            # great for reasoning
+bun run start
+```
+
+Best experienced in a truecolor terminal: GNOME Terminal, Alacritty, Kitty,
+or any terminal with `COLORTERM=truecolor`.
+
+---
+
+### macOS
+
+**1. Install Bun**
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+**2. Install Ollama**
+
+Download from **https://ollama.com/download/mac** and drag to Applications,
+or via Homebrew: `brew install ollama`.
+
+**3. Clone and install**
+
+```bash
+git clone https://github.com/YOUR-USERNAME/local-cli.git
+cd local-cli
+bun install
+```
+
+**4. Pull a model and run**
+
+```bash
+ollama pull qwen2.5-coder
+bun run start
 ```
 
 ## Usage
