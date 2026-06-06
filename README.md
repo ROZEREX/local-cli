@@ -42,7 +42,7 @@ After install, Ollama runs as a background service automatically.
 
 Use **Windows Terminal** (recommended — best color support) or PowerShell:
 ```powershell
-git clone https://github.com/YOUR-USERNAME/local-cli.git
+git clone https://github.com/ROZEREX/local-cli.git
 cd local-cli
 bun install
 ```
@@ -91,7 +91,7 @@ Everything works without this — only Ctrl+V clipboard paste needs it.
 **4. Clone and install**
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/local-cli.git
+git clone https://github.com/ROZEREX/local-cli.git
 cd local-cli
 bun install
 ```
@@ -125,7 +125,7 @@ or via Homebrew: `brew install ollama`.
 **3. Clone and install**
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/local-cli.git
+git clone https://github.com/ROZEREX/local-cli.git
 cd local-cli
 bun install
 ```
@@ -275,7 +275,7 @@ bun run test:live    # live check against the real Ollama model
 Go to **https://github.com/new** and create an empty repository (no README, no
 `.gitignore`, no license — we already have all of those). Name it whatever you
 like (e.g. `local-cli`). Set it to **Public**. Copy the URL it shows you
-(something like `https://github.com/YOUR-USERNAME/local-cli.git`).
+(something like `https://github.com/ROZEREX/local-cli.git`).
 
 ### 2 — First-time Git setup (one-off, if you've never used Git on this machine)
 
@@ -299,7 +299,7 @@ git add .
 git commit -m "Initial commit — local-cli v0.1.0"
 
 # Point it at your GitHub repo (replace the URL with yours)
-git remote add origin https://github.com/YOUR-USERNAME/local-cli.git
+git remote add origin https://github.com/ROZEREX/local-cli.git
 
 # Push to GitHub
 git push -u origin main
