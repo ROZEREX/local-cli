@@ -63,14 +63,21 @@ export class TagSplitter {
   }
 }
 
-// Detects when a model is stuck repeating itself (a degenerate generation loop —
-// e.g. gemma repeating the same paragraph for thousands of tokens). Fed the
-// streamed text; trips once any substantial line has recurred `threshold` times.
+// Detects a DEGENERATE generation loop — the same block of text repeated
+// back-to-back many times (e.g. a model emitting the identical paragraph for
+// thousands of tokens). Deliberately conservative: it only trips on consecutive
+// verbatim repetition that has consumed a lot of output, so ordinary verbose
+// answers (which may reuse a phrase here and there, or restate a plan once or
+// twice) are NEVER cut off. False positives break real work, so we bias hard
+// toward leaving generation alone.
 export class RepetitionGuard {
   private buf = "";
-  private counts = new Map<string, number>();
+  private lines: string[] = [];
   private _tripped = false;
-  constructor(private threshold = 6, private minLen = 24) {}
+
+  // reps: how many consecutive identical copies of a block before we call it a
+  // loop. chars: that repetition must also total at least this many characters.
+  constructor(private reps = 4, private chars = 800) {}
 
   // Returns true once a loop is detected.
   push(text: string): boolean {
@@ -82,17 +89,41 @@ export class RepetitionGuard {
       this.buf = this.buf.slice(nl + 1);
       if (this._tripped) return true;
     }
-    // Some models stream without newlines — flush a long line-less buffer too.
-    if (this.buf.length > 4000) { this.record(this.buf); this.buf = ""; }
+    // Models that stream without newlines: treat a very long line-less run as a
+    // unit so we can still notice a stuck loop.
+    if (this.buf.length > 2000) { this.record(this.buf); this.buf = ""; }
     return this._tripped;
   }
 
-  private record(line: string): void {
-    const norm = line.trim().toLowerCase().replace(/\s+/g, " ");
-    if (norm.length < this.minLen) return;
-    const c = (this.counts.get(norm) ?? 0) + 1;
-    this.counts.set(norm, c);
-    if (c >= this.threshold) this._tripped = true;
+  private record(rawLine: string): void {
+    this.lines.push(rawLine.replace(/\s+/g, " ").trim());
+    if (this.lines.length > 300) this.lines.shift();
+    this.detect();
+  }
+
+  // Trip only if the most recent lines are a block repeated `reps`+ times in a
+  // row, and that repetition spans at least `chars` characters.
+  private detect(): void {
+    const L = this.lines;
+    const n = L.length;
+    const maxCycle = Math.min(40, Math.floor(n / this.reps));
+    for (let c = 1; c <= maxCycle; c++) {
+      // Count consecutive copies of the last c-line block.
+      let copies = 1;
+      while ((copies + 1) * c <= n) {
+        let same = true;
+        for (let i = 0; i < c; i++) {
+          if (L[n - 1 - i] !== L[n - 1 - i - copies * c]) { same = false; break; }
+        }
+        if (!same) break;
+        copies++;
+      }
+      if (copies >= this.reps) {
+        let blockChars = 0;
+        for (let i = 0; i < c; i++) blockChars += L[n - 1 - i]!.length;
+        if (blockChars >= 20 && blockChars * copies >= this.chars) { this._tripped = true; return; }
+      }
+    }
   }
 
   get tripped(): boolean { return this._tripped; }
