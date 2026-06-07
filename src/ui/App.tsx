@@ -9,7 +9,7 @@ import { chat, resetClient, estimateTokens, summarizeConversation, compactHistor
 import { listOllamaModelsDetailed, modelHint } from "../ollama";
 import { buildDiffView, type DiffView } from "../diff";
 import { ThinkSplitter } from "../think";
-import { isCommand, runCommand, type CommandContext } from "../commands";
+import { isCommand, runCommand, commandList, type CommandContext } from "../commands";
 import {
   saveSession, loadSession, latestSession, listSessions, deleteSession, newSessionId, deriveTitle,
   type SessionMeta,
@@ -21,6 +21,8 @@ import {
   GeneratingLine, type ToolView, type StatusState,
 } from "./components";
 import { expandSelection, readFilesAsContext } from "../files";
+import { learnProfileInstruction, profileFilePath } from "../profile";
+import { stopAllServers } from "../proc";
 
 type Item =
   | { id: number; kind: "banner"; model: string; baseUrl: string; cwd: string }
@@ -49,6 +51,10 @@ function summarize(name: string, argsJson: string): string {
     case "grep_files": return `"${a.pattern ?? ""}"${a.glob ? " in " + a.glob : ""}`;
     case "list_dir": return a.path ?? ".";
     case "bash": return a.command ?? "";
+    case "run_server": return a.command ?? "";
+    case "server_logs": return a.id ? `logs ${a.id}` : "logs (latest)";
+    case "stop_server": return a.id ? `stop ${a.id}` : "stop (latest)";
+    case "list_servers": return "";
     default: return argsJson;
   }
 }
@@ -58,6 +64,8 @@ function permDetail(name: string, args: any): string {
   if (name === "write_file") return `write ${args.path} (${args.content?.length ?? 0} chars)`;
   if (name === "edit_file") return `edit ${args.path}`;
   if (name === "delete_file") return `delete ${args.path}`;
+  if (name === "run_server") return `▶ start server: ${args.command}`;
+  if (name === "stop_server") return `stop server ${args.id ?? "(latest)"}`;
   return JSON.stringify(args);
 }
 
@@ -266,16 +274,28 @@ export function App({ autoResume = false }: AppProps) {
     }
   };
 
-  const runInit = () => {
-    commit({ kind: "user", text: "/init — generating project context" });
-    historyRef.current.push({
-      role: "user",
-      content:
-        "Explore this project — read package.json / manifests, scan the directory structure, and read the key entry files. " +
-        "Then create a concise LOCALCLI.md at the project root using write_file, summarizing: what the project is, how to run/build/test it, " +
-        "the directory layout, the most important files, and the coding conventions. Keep it under ~60 lines.",
-    });
+  // Run the agent on a canned instruction (used by /init and /learn).
+  const runAgentTask = (display: string, instruction: string) => {
+    commit({ kind: "user", text: display });
+    historyRef.current.push({ role: "user", content: instruction });
     void runTurn();
+  };
+
+  const runInit = () => {
+    runAgentTask(
+      "/init — generating project context",
+      "Explore this project — read package.json / manifests, scan the directory structure, and read the key entry files. " +
+        "Then create a concise LOCALCLI.md at the project root using write_file, summarizing: what the project is, how to run/build/test it, " +
+        "the directory layout, the most important files, and the coding conventions. Keep it under ~60 lines."
+    );
+  };
+
+  const learnProfile = (path?: string) => {
+    const target = path ? resolve(getConfig().cwd, path) : getConfig().cwd;
+    runAgentTask(
+      `/learn — learning your coding style from ${path ?? "this project"}`,
+      `Set your working focus to: ${target}\n\n` + learnProfileInstruction(profileFilePath())
+    );
   };
 
   // Global keys: shift+tab toggles plan mode, esc interrupts.
@@ -425,7 +445,7 @@ export function App({ autoResume = false }: AppProps) {
     history: historyRef.current,
     print: (text, tone) => commit({ kind: "system", text, tone }),
     clearHistory: startNewChat,
-    exit: () => { autosave(); exit(); },
+    exit: () => { autosave(); stopAllServers(); exit(); },
     mode: modeRef.current,
     setMode,
     compact,
@@ -451,6 +471,7 @@ export function App({ autoResume = false }: AppProps) {
     openFiles: () => setOverlay({ kind: "files" }),
     addPaths,
     runInit,
+    learnProfile,
   });
 
   const onSubmit = async (raw: string) => {
@@ -477,6 +498,16 @@ export function App({ autoResume = false }: AppProps) {
   useEffect(() => {
     if (autoResume) resume();
     void warmUp();
+    // Best-effort: don't leave background servers running if the process dies.
+    const cleanup = () => stopAllServers();
+    process.on("exit", cleanup);
+    process.on("SIGINT", cleanup);
+    process.on("SIGTERM", cleanup);
+    return () => {
+      process.off("exit", cleanup);
+      process.off("SIGINT", cleanup);
+      process.off("SIGTERM", cleanup);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -551,6 +582,7 @@ export function App({ autoResume = false }: AppProps) {
             placeholder={mode === "plan" ? "describe what to plan…" : mode === "auto" ? "auto-accept on — message…" : "message, or /help…  (↑ history · Ctrl+V paste)"}
             onSubmit={onSubmit}
             history={inputHistoryRef}
+            commands={commandList()}
           />
         ) : (
           <GeneratingLine tokens={liveOut} elapsed={elapsed} tps={usage.tps} />

@@ -18,11 +18,14 @@ export interface Config {
   // "auto" detects native tool support per model and falls back to prompted
   // tool-calling when unsupported (e.g. deepseek-coder-v2-lite).
   toolMode: "auto" | "native" | "prompted";
+  // Preferred package manager for this project. "auto" = detect from lockfiles
+  // (and ask the user when ambiguous). Otherwise the agent is told to use this.
+  packageManager: "auto" | "bun" | "npm" | "pnpm" | "yarn";
 }
 
 // Resolved lazily so tests can isolate their config via LOCAL_CLI_CONFIG_DIR
 // (set before the first config access) and never touch the real ~/.local-cli.
-function configDir(): string {
+export function configDir(): string {
   return process.env.LOCAL_CLI_CONFIG_DIR || join(homedir(), ".local-cli");
 }
 function configPath(): string {
@@ -41,6 +44,7 @@ const DEFAULTS: Config = {
   autoCompact: true,
   toolMode: "auto",
   thinking: true,
+  packageManager: "auto",
 };
 
 let _config: Config | null = null;

@@ -126,4 +126,57 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "run_server",
+      description: "Start a LONG-RUNNING process in the background (dev server, watcher, host) that keeps running after this call returns. Use this — NOT bash — for things like 'npm run dev', 'bun run dev', 'php -S', 'vite', 'next dev'. Returns a server id and the startup output (so you can see the URL/port or an early crash). bash is for commands that finish; run_server is for things that stay up.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "The command that starts the server (e.g. 'npm run dev')" },
+          cwd: { type: "string", description: "Working directory (defaults to the project root)" },
+          wait: { type: "number", description: "Milliseconds to wait for startup output before returning (default 2500, max 15000)" },
+        },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "server_logs",
+      description: "Read recent output (stdout+stderr) from a background server started with run_server. Use this to check whether it's serving correctly or to see runtime errors so you can fix them.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Server id (defaults to the most recently started server)" },
+          lines: { type: "number", description: "How many recent lines to return (default 80)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "stop_server",
+      description: "Stop a background server started with run_server.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Server id (defaults to the most recently started server)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_servers",
+      description: "List all background servers started this session, with their status, URL, and command.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
 ];

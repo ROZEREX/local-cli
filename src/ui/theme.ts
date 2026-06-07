@@ -59,6 +59,10 @@ export const toolIcon: Record<string, string> = {
   list_dir: "▣",
   bash: "⌘",
   delete_file: "␡",
+  run_server: "▶",
+  server_logs: "≡",
+  stop_server: "■",
+  list_servers: "☰",
 };
 
 // Accent color per tool, for the card's left border.
@@ -71,4 +75,8 @@ export const toolColor: Record<string, string> = {
   list_dir: theme.color.accent,
   bash: theme.color.warn,
   delete_file: theme.color.error,
+  run_server: theme.color.success,
+  server_logs: theme.color.accent,
+  stop_server: theme.color.error,
+  list_servers: theme.color.accent,
 };

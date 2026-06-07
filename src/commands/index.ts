@@ -3,7 +3,10 @@ import { getConfig, saveConfig } from "../config";
 import { resetClient } from "../llm";
 import { findProjectContext } from "../context";
 import { listOllamaModelsDetailed, modelInfo, modelHint, formatCtx } from "../ollama";
+import { readProfile, detectPackageManager, resolvePackageManager } from "../profile";
+import { listServersTool, stopServerTool } from "../tools/executor";
 import type { Mode } from "../prompt";
+import type { Config } from "../config";
 
 export interface CommandContext {
   history: ChatCompletionMessageParam[];
@@ -23,6 +26,8 @@ export interface CommandContext {
   openFiles: () => void;
   addPaths: (paths: string[]) => void;
   runInit: () => void;
+  // Run the agent to learn the user's coding style and write the global profile.
+  learnProfile: (path?: string) => void;
 }
 
 export interface SlashCommand {
@@ -116,6 +121,62 @@ const commands: SlashCommand[] = [
         lines.push(`  ⚠ Your contextWindow (${cfg.contextWindow.toLocaleString()}) exceeds this model's native ${info.contextLength.toLocaleString()}. Lower it with /config contextWindow ${info.contextLength}.`);
       }
       ctx.print(lines.join("\n"));
+    },
+  },
+  {
+    name: "learn",
+    description: "Analyze a project to learn your coding style → saves a profile used everywhere",
+    run: (args, ctx) => ctx.learnProfile(args[0]),
+  },
+  {
+    name: "profile",
+    description: "Show the learned coding profile (created by /learn)",
+    run: (_args, ctx) => {
+      const p = readProfile();
+      if (p) ctx.print("Your coding profile (applied to every project):\n\n" + p);
+      else ctx.print("No coding profile yet. Run /learn in a project that represents your style, and I'll learn it.");
+    },
+  },
+  {
+    name: "pm",
+    description: "Show or set the package manager:  /pm auto|bun|npm|pnpm|yarn",
+    run: (args, ctx) => {
+      const cfg = getConfig();
+      const valid = ["auto", "bun", "npm", "pnpm", "yarn"];
+      if (args.length === 0) {
+        const { pm, source } = resolvePackageManager(cfg.cwd);
+        const detected = detectPackageManager(cfg.cwd);
+        ctx.print(
+          [
+            `Package manager setting: ${cfg.packageManager}`,
+            `In this project: ${pm ?? "unknown"}${source === "detected" ? " (detected from lockfile)" : source === "config" ? " (from your setting)" : " (no lockfile — I'll ask before installing)"}`,
+            detected ? `Lockfile detected: ${detected}` : "No lockfile found here.",
+            "",
+            "Set with: /pm auto|bun|npm|pnpm|yarn   (auto = detect per project)",
+          ].join("\n")
+        );
+        return;
+      }
+      const choice = (args[0] ?? "").toLowerCase();
+      if (!valid.includes(choice)) {
+        ctx.print(`Invalid: "${choice}". Choose one of: ${valid.join(", ")}`, "error");
+        return;
+      }
+      saveConfig({ packageManager: choice as Config["packageManager"] });
+      ctx.print(choice === "auto"
+        ? "Package manager set to auto — I'll detect it per project from the lockfile."
+        : `Package manager set to ${choice} — I'll use it for installs and scripts.`);
+    },
+  },
+  {
+    name: "servers",
+    description: "List background servers, or stop one:  /servers stop <id>",
+    run: (args, ctx) => {
+      if (args[0] === "stop") {
+        ctx.print(stopServerTool({ id: args[1] }));
+        return;
+      }
+      ctx.print(listServersTool());
     },
   },
   {
@@ -298,4 +359,9 @@ export async function runCommand(input: string, ctx: CommandContext): Promise<vo
 
 export function commandNames(): string[] {
   return commands.map(c => c.name);
+}
+
+// Name + description for every command, for the slash-command menu in the input.
+export function commandList(): { name: string; description: string }[] {
+  return commands.map(c => ({ name: c.name, description: c.description }));
 }

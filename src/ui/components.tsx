@@ -393,27 +393,67 @@ export function PromptInput({
   color,
   onSubmit,
   history,
+  commands = [],
   pasteSource = readClipboard,
 }: {
   placeholder: string;
   color: string;
   onSubmit: (value: string) => void;
   history: React.MutableRefObject<string[]>;
+  commands?: { name: string; description: string }[];
   pasteSource?: () => Promise<string>;
 }) {
   const valueRef = useRef("");
   const cursorRef = useRef(0);
   const histIdx = useRef(-1);   // -1 = editing a live draft
   const draft = useRef("");
+  const menuIdxRef = useRef(0);     // highlighted item in the slash-command menu
+  const menuDismissed = useRef(false); // esc hides the menu until the text changes
   const [, force] = useReducer((x: number) => x + 1, 0);
 
-  const setVal = (v: string, c: number) => { valueRef.current = v; cursorRef.current = c; force(); };
+  // The slash-command menu shows while the user is typing a command name —
+  // i.e. the buffer is "/" followed by only word chars, no space yet. Returns
+  // the filtered command list, or null when the menu shouldn't show.
+  const menuItems = (): { name: string; description: string }[] | null => {
+    if (menuDismissed.current) return null;
+    const m = /^\/([a-zA-Z]*)$/.exec(valueRef.current);
+    if (!m) return null;
+    const q = (m[1] ?? "").toLowerCase();
+    const items = commands.filter(c => c.name.toLowerCase().startsWith(q));
+    return items.length ? items : null;
+  };
+
+  const setVal = (v: string, c: number) => {
+    valueRef.current = v; cursorRef.current = c;
+    menuDismissed.current = false; menuIdxRef.current = 0;
+    force();
+  };
   const insert = (text: string) => {
     const v = valueRef.current, c = cursorRef.current;
     setVal(v.slice(0, c) + text + v.slice(c), c + text.length);
   };
 
   useInput((input, key) => {
+    // ── Slash-command menu navigation (takes over keys while it's open) ──
+    const menu = menuItems();
+    if (menu) {
+      const idx = Math.min(menuIdxRef.current, menu.length - 1);
+      if (key.escape) { menuDismissed.current = true; force(); return; }
+      if (key.upArrow) { menuIdxRef.current = Math.max(0, idx - 1); force(); return; }
+      if (key.downArrow) { menuIdxRef.current = Math.min(menu.length - 1, idx + 1); force(); return; }
+      // Tab completes the highlighted command into the input (ready for args).
+      if (key.tab && !key.shift) { const name = menu[idx]!.name; setVal(`/${name} `, name.length + 2); return; }
+      // Enter runs the highlighted command immediately.
+      if (key.return) {
+        const cmd = `/${menu[idx]!.name}`;
+        history.current.push(cmd);
+        histIdx.current = -1; draft.current = "";
+        setVal("", 0);
+        onSubmit(cmd);
+        return;
+      }
+    }
+
     if (key.tab) return; // reserved for mode cycling at the app level
 
     if (key.return) {
@@ -470,24 +510,46 @@ export function PromptInput({
 
   const v = valueRef.current;
   const c = cursorRef.current;
+  const menu = menuItems();
+  const menuSel = menu ? Math.min(menuIdxRef.current, menu.length - 1) : 0;
 
-  if (!v) {
-    return (
-      <Box borderStyle="round" borderColor={color} paddingX={1}>
-        <Text color={color} bold>{theme.icon.user} </Text>
-        <Text inverse> </Text>
-        <Text color={theme.color.dim}>{placeholder}</Text>
-      </Box>
-    );
-  }
-
-  const before = v.slice(0, c);
-  const at = v[c] ?? " ";
-  const after = v.slice(c + 1);
-  return (
+  const inputBox = !v ? (
     <Box borderStyle="round" borderColor={color} paddingX={1}>
       <Text color={color} bold>{theme.icon.user} </Text>
-      <Text color={theme.color.fg}>{before}<Text inverse>{at}</Text>{after}</Text>
+      <Text inverse> </Text>
+      <Text color={theme.color.dim}>{placeholder}</Text>
+    </Box>
+  ) : (
+    <Box borderStyle="round" borderColor={color} paddingX={1}>
+      <Text color={color} bold>{theme.icon.user} </Text>
+      <Text color={theme.color.fg}>{v.slice(0, c)}<Text inverse>{v[c] ?? " "}</Text>{v.slice(c + 1)}</Text>
+    </Box>
+  );
+
+  if (!menu) return inputBox;
+
+  // The slash-command menu, like Claude's: filtered list with descriptions.
+  const WINDOW = 8;
+  const start = Math.max(0, Math.min(menuSel - Math.floor(WINDOW / 2), Math.max(0, menu.length - WINDOW)));
+  const visible = menu.slice(start, start + WINDOW);
+  const nameW = Math.max(...menu.map(m => m.name.length));
+  return (
+    <Box flexDirection="column">
+      {inputBox}
+      <Box flexDirection="column" borderStyle="round" borderColor={theme.color.primary} paddingX={1}>
+        <Text bold color={theme.color.primary}>{theme.icon.spark} commands {menu.length > WINDOW ? <Text dimColor>({menu.length})</Text> : null}</Text>
+        {visible.map((cmd, i) => {
+          const active = start + i === menuSel;
+          return (
+            <Text key={cmd.name} color={active ? theme.color.accent : undefined}>
+              {active ? "❯ " : "  "}
+              <Text color={active ? theme.color.accent : theme.color.fg}>/{cmd.name.padEnd(nameW)}</Text>
+              <Text dimColor>  {cmd.description}</Text>
+            </Text>
+          );
+        })}
+        <Box marginTop={1}><Text dimColor>↑↓ move · tab complete · enter run · esc close</Text></Box>
+      </Box>
     </Box>
   );
 }

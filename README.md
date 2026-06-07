@@ -154,6 +154,8 @@ bun run index.ts -b http://localhost:1234/v1   # e.g. LM Studio
 ### In the TUI
 
 - Type a message to chat. The agent uses tools to explore and edit your code.
+- `/` — opens a **command menu** that filters as you type; `↑`/`↓` to move,
+  `tab` to complete, `enter` to run, `esc` to close.
 - `@path/to/file` — pull a file's contents into context for your message.
 - `↑` / `↓` — recall previous inputs (shell-style history).
 - `Ctrl+V` — paste from the system clipboard (works even when the terminal eats
@@ -190,6 +192,10 @@ bun run index.ts -b http://localhost:1234/v1   # e.g. LM Studio
 | `/model [name]` | Pick a model (arrow-key picker), or set one by name |
 | `/models` | List installed Ollama models with size, parameters & quantization |
 | `/modelinfo [name]` | Full details for one model — native context length, capabilities |
+| `/learn [path]` | Analyze a project to learn your coding style → saved as a profile used everywhere |
+| `/profile` | Show the learned coding profile |
+| `/pm [auto\|bun\|npm\|pnpm\|yarn]` | Show or set the package manager |
+| `/servers [stop <id>]` | List background servers, or stop one |
 | `/resume [id]` | Resume a saved session (picker if no id) |
 | `/sessions` | List & pick a saved session for this folder |
 | `/save` | Save the current session now |
@@ -204,10 +210,32 @@ bun run index.ts -b http://localhost:1234/v1   # e.g. LM Studio
 
 ## Tools the agent can use
 
-`read_file`, `write_file`, `edit_file`, `glob_files`, `grep_files`, `list_dir`,
-`bash`, `delete_file`. Mutating tools (`write_file`, `edit_file`, `delete_file`,
-`bash`) prompt for permission — answer `y`, `N`, or `a` (always allow that tool
-for the session).
+**Files & shell:** `read_file`, `write_file`, `edit_file`, `glob_files`,
+`grep_files`, `list_dir`, `bash`, `delete_file`.
+
+**Running & hosting** (so it can run what it builds and fix it):
+`run_server` starts a long-lived process (dev server, watcher, host) in the
+background and returns its URL/port; `server_logs` reads its output so the agent
+can spot runtime errors and fix them; `stop_server` / `list_servers` manage them.
+Unlike `bash` (which runs to completion), servers keep running while you keep
+chatting, and are killed automatically when you quit.
+
+Mutating tools (`write_file`, `edit_file`, `delete_file`, `bash`, `run_server`,
+`stop_server`) prompt for permission — answer `y`, `N`, or `a` (always allow that
+tool for the session). Auto-accept mode runs them without prompting.
+
+## Learning your style — `/learn`
+
+Run `/learn` inside a project that represents how you like to code. The agent
+reads the structure, stack, and several source files, then writes a **coding
+profile** to `~/.local-cli/profile.md` describing your stack, directory/file
+naming, conventions, and practices. That profile is injected into every prompt
+afterward — in **every** project — so the agent codes the way you do. View it
+with `/profile`, re-run `/learn` anytime to update it.
+
+The agent also detects your **package manager** from the lockfile (bun, npm,
+pnpm, yarn) and uses it; if there's no lockfile it asks which you want. Override
+with `/pm`.
 
 ## Configuration
 
@@ -239,7 +267,9 @@ cwd, and context usage (`~18,400 (56%)`). `esc` interrupts an in-flight response
 index.ts              entry point, arg parsing, one-shot mode, Ink render
 src/
   config.ts           persisted settings (~/.local-cli/config.json)
-  prompt.ts           dynamic system prompt (mode, context, prompted tool docs)
+  profile.ts          learned coding profile + package-manager detection
+  proc.ts             background server/process registry (run_server et al.)
+  prompt.ts           dynamic system prompt (mode, profile, context, tool docs)
   llm.ts              streaming loop: native + prompted tool-calling, compaction
   ollama.ts           list installed models, detect native tool support
   toolparse.ts        parse tool calls from content (tags / fences / bare JSON)
@@ -259,9 +289,11 @@ src/
 
 ## Tests
 
-199 tests across tool execution, the splitter, native + **prompted** tool-calling
+236 tests across tool execution, the splitter, native + **prompted** tool-calling
 (XML raw-body format, full-file write verbatim, the `400` fallback), the diff,
-sessions/compaction/context, the custom input (history + paste), and the TUI flows:
+sessions/compaction/context, the coding profile + package-manager detection,
+background servers (real processes, log capture, URL detection), the custom input
+(history + paste), the slash-command menu, and the TUI flows:
 
 ```bash
 bun run test         # full suite (uses mock servers, no model needed)

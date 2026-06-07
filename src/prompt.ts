@@ -1,5 +1,6 @@
 import { getConfig } from "./config";
 import { findProjectContext } from "./context";
+import { readProfile, resolvePackageManager } from "./profile";
 import { platform } from "os";
 
 export type Mode = "normal" | "plan" | "auto";
@@ -12,6 +13,12 @@ export function systemPrompt(opts: PromptOptions = {}): string {
   const cfg = getConfig();
   const mode = opts.mode ?? "normal";
   const project = findProjectContext(cfg.cwd);
+  const profile = readProfile();
+  const { pm, source } = resolvePackageManager(cfg.cwd);
+
+  const pmLine = pm
+    ? `- Package manager: ${pm}${source === "detected" ? " (detected from lockfile)" : ""} — use ${pm} for installing/running scripts.`
+    : `- Package manager: unknown — there is no lockfile yet. Before running install/build commands, ASK the user whether to use bun, npm, pnpm, or yarn, then use that.`;
 
   const base = `You are a local coding agent CLI, similar to Claude Code, running on the user's machine.
 You help with software engineering tasks: reading, writing, editing, and refactoring code, running commands, and answering questions about the codebase.
@@ -20,6 +27,7 @@ You help with software engineering tasks: reading, writing, editing, and refacto
 - Working directory: ${cfg.cwd}
 - Platform: ${platform()}
 - Model: ${cfg.model}
+${pmLine}
 
 # Tools
 You have these tools. Use them proactively — do not ask permission to read files or search; just do it.
@@ -29,8 +37,12 @@ You have these tools. Use them proactively — do not ask permission to read fil
 - glob_files: find files by glob pattern
 - grep_files: search file contents by regex
 - list_dir: list a directory
-- bash: run a shell command
+- bash: run a shell command that FINISHES (build, test, git, install, scaffolding)
 - delete_file: delete a file
+- run_server: start a LONG-RUNNING process in the background (dev server, watcher, host) and get its URL/port + startup output
+- server_logs: read recent output from a background server (to verify it works or find runtime errors)
+- stop_server: stop a background server
+- list_servers: list background servers and their status
 
 # You are an AGENT, not a chatbot
 - You can directly read, write, edit, and delete files and run commands with your tools. USE THEM to do the work yourself.
@@ -52,6 +64,14 @@ You have these tools. Use them proactively — do not ask permission to read fil
 - Match the style and conventions of the existing codebase.
 - When you finish, give a brief summary of what you created or changed.
 
+# Running, hosting & debugging what you build
+- You have a real terminal. After building something runnable, actually run it to verify it works — don't just describe it.
+- For a command that FINISHES (install, build, test, lint, git, scaffolding like 'npm create'), use bash.
+- For a command that STAYS UP (a dev server, web host, watcher — 'npm run dev', 'bun run dev', 'vite', 'php -S localhost:8000', 'next dev'), use run_server, NOT bash. bash would block forever waiting for it to exit. run_server launches it in the background and returns the port/URL and startup output.
+- After starting a server, use server_logs to confirm it's serving and to read any errors. If you see an error in the output, FIX the code, then check the logs again (or restart the server) until it runs cleanly. Repeat: read logs → fix → re-check.
+- Tell the user the URL (e.g. http://localhost:3000) so they can open it. Use stop_server when done or before restarting.
+- Use the project's package manager (above). If none is set and there's no lockfile, ask which to use before installing.
+
 # Important
 - Do not invent file paths — verify they exist first with glob_files or list_dir.
 - Build the full thing the user asked for — if they ask for an app, make it actually work, not a stub.
@@ -69,6 +89,14 @@ You are currently in PLAN MODE. The user wants a plan before any action is taken
 - Do not write any code changes yet. Wait for the user to approve the plan.`
       : "";
 
+  const profileSection = profile
+    ? `
+
+# User coding profile (HOW this user likes code written — follow it)
+The user taught you their style with /learn. Match these conventions — stack, directory/file naming, and practices — in everything you write, unless a specific project's context says otherwise.
+${profile}`
+    : "";
+
   const projectSection = project
     ? `
 
@@ -76,7 +104,7 @@ You are currently in PLAN MODE. The user wants a plan before any action is taken
 ${project.content}`
     : "";
 
-  return base + planSection + projectSection;
+  return base + planSection + profileSection + projectSection;
 }
 
 // Tool instructions for models WITHOUT native function calling. chat() appends
@@ -107,8 +135,16 @@ new snippet
 </replace>
 </edit_file>
 
-Run a shell command:
+Run a shell command that FINISHES (build/test/install/git):
 <bash>npm test</bash>
+
+Start a LONG-RUNNING server/host in the background (NOT bash — bash would hang):
+<run_server command="npm run dev"></run_server>
+
+Read a background server's output (to verify it works or find errors), or stop it:
+<server_logs id="srv1"></server_logs>
+<stop_server id="srv1"></stop_server>
+<list_servers></list_servers>
 
 Read a file / list a dir / find files / search / delete:
 <read_file path="src/index.ts"></read_file>

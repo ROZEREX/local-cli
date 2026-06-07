@@ -22,6 +22,7 @@ export interface ParsedToolCall {
 export const TOOL_NAMES = [
   "read_file", "write_file", "edit_file", "glob_files",
   "grep_files", "list_dir", "bash", "delete_file",
+  "run_server", "server_logs", "stop_server", "list_servers",
 ];
 
 function stripEdgeNewlines(s: string): string {

@@ -3,6 +3,7 @@ import { resolve, join, dirname, relative } from "path";
 import { glob } from "glob";
 import { spawnSync } from "child_process";
 import { getConfig } from "../config";
+import { startServer, serverLogs, stopServer, listServers, getServer, waitForStartup } from "../proc";
 
 function resolvePath(p: string): string {
   if (!p) return getConfig().cwd;
@@ -263,6 +264,53 @@ export function deleteFile(args: { path: string }): string {
   }
 }
 
+// ─── run_server (long-running background process) ─────────────────────────────
+export async function runServer(args: { command: string; cwd?: string; wait?: number }): Promise<string> {
+  if (!args.command) return "Error: command is required (e.g. 'npm run dev').";
+  const proc = startServer(args.command, args.cwd);
+  // Give it a moment to boot so we can return startup output / an early crash.
+  const waitMs = Math.min(Math.max(args.wait ?? 2500, 0), 15000);
+  await waitForStartup(proc, waitMs);
+
+  const recent = serverLogs(proc.id, 40).join("\n");
+  if (proc.status === "exited") {
+    return `Server [${proc.id}] exited immediately (code ${proc.exitCode}). It is NOT running.\nCommand: ${args.command}\nOutput:\n${recent || "(no output)"}\n\nFix the cause and start it again.`;
+  }
+  const where = proc.url ? `\nDetected URL: ${proc.url}` : "";
+  return `Server [${proc.id}] started and is running in the background.\nCommand: ${args.command}${where}\nStartup output:\n${recent || "(no output yet)"}\n\nUse server_logs id="${proc.id}" to read more output later (e.g. to catch runtime errors), and stop_server id="${proc.id}" to stop it.`;
+}
+
+// ─── server_logs ──────────────────────────────────────────────────────────────
+export function serverLogsTool(args: { id?: string; lines?: number }): string {
+  const all = listServers();
+  if (all.length === 0) return "No background servers have been started.";
+  const id = args.id || all[all.length - 1]!.id;
+  const proc = getServer(id);
+  if (!proc) return `Error: no server with id "${id}". Running servers: ${all.map(p => p.id).join(", ")}`;
+  const lines = serverLogs(id, args.lines ?? 80).join("\n");
+  const state = proc.status === "running" ? "running" : `exited (code ${proc.exitCode})`;
+  return `Server [${id}] — ${state}${proc.url ? ` — ${proc.url}` : ""}\nCommand: ${proc.command}\n\n${lines || "(no output)"}`;
+}
+
+// ─── stop_server ──────────────────────────────────────────────────────────────
+export function stopServerTool(args: { id?: string }): string {
+  const all = listServers();
+  if (all.length === 0) return "No background servers to stop.";
+  const id = args.id || all[all.length - 1]!.id;
+  if (!getServer(id)) return `Error: no server with id "${id}". Known: ${all.map(p => p.id).join(", ")}`;
+  stopServer(id);
+  return `Stopped server [${id}].`;
+}
+
+// ─── list_servers ─────────────────────────────────────────────────────────────
+export function listServersTool(): string {
+  const all = listServers();
+  if (all.length === 0) return "No background servers running.";
+  return all
+    .map(p => `[${p.id}] ${p.status === "running" ? "● running" : `○ exited(${p.exitCode})`}  ${p.url ?? ""}  — ${p.command}`)
+    .join("\n");
+}
+
 // Normalize common arg-name variations models emit, so a slightly-off tool call
 // still works (covers native tool calls too, not just the prompted parser).
 function normalizeArgs(args: any): any {
@@ -275,6 +323,13 @@ function normalizeArgs(args: any): any {
   // edit_file alias variations
   if (args.search && !args.old_string) args.old_string = args.search;
   if ((args.replace ?? args.replacement) && !args.new_string) args.new_string = args.replace ?? args.replacement;
+  // server tool alias variations
+  if (!args.id) {
+    for (const a of ["server_id", "serverId", "server", "pid"]) {
+      if (args[a]) { args.id = args[a]; break; }
+    }
+  }
+  if (!args.command && args.cmd) args.command = args.cmd;
   return args;
 }
 
@@ -290,6 +345,10 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "list_dir": return listDir(args);
     case "bash": return bashExec(args);
     case "delete_file": return deleteFile(args);
+    case "run_server": return await runServer(args);
+    case "server_logs": return serverLogsTool(args);
+    case "stop_server": return stopServerTool(args);
+    case "list_servers": return listServersTool();
     default: return `Error: Unknown tool: ${name}`;
   }
 }
