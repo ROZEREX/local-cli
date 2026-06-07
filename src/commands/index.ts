@@ -299,6 +299,7 @@ const commands: SlashCommand[] = [
             `  temperature:   ${cfg.temperature}`,
             `  contextWindow: ${cfg.contextWindow}`,
             `  autoCompact:   ${cfg.autoCompact}`,
+            `  loopGuard:     ${cfg.loopGuard}  (auto-stop runaway repeat loops; off by default)`,
             `  cwd:           ${cfg.cwd}`,
             "",
             "Set with: /config <key> <value>",
@@ -310,7 +311,7 @@ const commands: SlashCommand[] = [
       if (!key) return;
       const value = rest.join(" ");
       const numeric = ["maxTokens", "temperature", "contextWindow"];
-      const bool = ["autoCompact"];
+      const bool = ["autoCompact", "loopGuard"];
       const updates: any = {};
       updates[key] = numeric.includes(key) ? Number(value)
         : bool.includes(key) ? value === "true"

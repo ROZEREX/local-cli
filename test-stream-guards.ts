@@ -2,9 +2,14 @@
 // (removes <|channel|>… markup that models like gemma leak into content).
 import "./test-config-setup";
 import { RepetitionGuard, HarmonyStripper } from "./src/think";
+import { getConfig } from "./src/config";
 
 let pass = 0, fail = 0;
 const check = (l: string, c: boolean, d = "") => { c ? (pass++, console.log(`  ✓ ${l}`)) : (fail++, console.log(`  ✗ ${l} ${d}`)); };
+
+// The auto-stop is OFF by default — it must never interrupt a turn unless the
+// user explicitly opts in (maxTokens + esc are the normal safety nets).
+check("loopGuard is disabled by default", getConfig().loopGuard === false);
 
 // ── RepetitionGuard: only a genuine back-to-back loop trips it ──
 const para = "I noticed some minor syntax errors in Dashboard.tsx and tried to fix them but failed due to a mismatch.\nI will re-read the file and apply the correct fixes for those specific lines.\n";

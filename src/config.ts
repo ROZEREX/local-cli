@@ -24,6 +24,10 @@ export interface Config {
   // Name of the active coding profile (in ~/.local-cli/profiles/<name>.md) that
   // is injected into every prompt. "" = none selected (auto-use if only one).
   activeProfile: string;
+  // Auto-stop a response when the model is stuck repeating itself. Off by default
+  // — maxTokens already caps a runaway, and esc interrupts manually. Opt in if a
+  // model loops badly for you.
+  loopGuard: boolean;
 }
 
 // Resolved lazily so tests can isolate their config via LOCAL_CLI_CONFIG_DIR
@@ -49,6 +53,7 @@ const DEFAULTS: Config = {
   thinking: true,
   packageManager: "auto",
   activeProfile: "",
+  loopGuard: false,
 };
 
 let _config: Config | null = null;

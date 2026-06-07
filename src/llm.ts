@@ -423,7 +423,8 @@ async function nativeTurn(
   // the live display, while keeping the full text for parsing/the fallback.
   const narr = new NarrationFilter();
   const harmony = new HarmonyStripper();   // strip <|channel|>… markup (gemma)
-  const rep = new RepetitionGuard();       // stop degenerate repeat loops
+  const rep = new RepetitionGuard();       // stop degenerate repeat loops (opt-in)
+  const guardOn = cfg.loopGuard === true;
   let looped = false;
 
   try {
@@ -450,7 +451,7 @@ async function nativeTurn(
         const clean = harmony.push(delta.content);
         if (clean) {
           assistantText += clean; genChars += clean.length;
-          if (rep.push(clean)) looped = true;
+          if (guardOn && rep.push(clean)) looped = true;
           const visible = narr.push(clean);
           if (visible) callbacks.onText(visible);
           if (looped) break;
@@ -554,6 +555,7 @@ async function promptedTurn(
   let raw = "";
   const prose = new ProseFilter();
   const rep = new RepetitionGuard();
+  const guardOn = cfg.loopGuard === true;
   let looped = false;
 
   try {
@@ -580,7 +582,7 @@ async function promptedTurn(
       // Show prose but hide raw tool-call markup; <think> is handled upstream.
       const visible = prose.push(text);
       if (visible) callbacks.onText(visible);
-      if (rep.push(text)) { looped = true; break; }
+      if (guardOn && rep.push(text)) { looped = true; break; }
     }
     const tail = prose.flush();
     if (tail) callbacks.onText(tail);
