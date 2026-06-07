@@ -23,6 +23,7 @@ export const TOOL_NAMES = [
   "read_file", "write_file", "edit_file", "glob_files",
   "grep_files", "list_dir", "bash", "delete_file",
   "run_server", "server_logs", "stop_server", "list_servers",
+  "read_profile", "update_profile",
 ];
 
 function stripEdgeNewlines(s: string): string {
@@ -81,6 +82,9 @@ function parseXmlToolCalls(content: string): ParsedToolCall[] {
       const r = /<(replace|replace_with|new_string)>([\s\S]*?)<\/\1>/.exec(body);
       if (s) args.old_string = stripEdgeNewlines(s[1]!);
       if (r) args.new_string = stripEdgeNewlines(r[2]!);
+    } else if (name === "update_profile") {
+      // The tag body is the profile text to save.
+      if (!args.content) args.content = stripEdgeNewlines(body);
     }
     resolvePathArg(args, body);
     calls.push({ name, arguments: args });

@@ -3,7 +3,10 @@ import { getConfig, saveConfig } from "../config";
 import { resetClient } from "../llm";
 import { findProjectContext } from "../context";
 import { listOllamaModelsDetailed, modelInfo, modelHint, formatCtx } from "../ollama";
-import { readProfile, detectPackageManager, resolvePackageManager } from "../profile";
+import {
+  readProfileByName, listProfileNames, getActiveProfileName, setActiveProfile,
+  deleteProfileByName, detectPackageManager, resolvePackageManager,
+} from "../profile";
 import { listServersTool, stopServerTool } from "../tools/executor";
 import type { Mode } from "../prompt";
 import type { Config } from "../config";
@@ -26,8 +29,10 @@ export interface CommandContext {
   openFiles: () => void;
   addPaths: (paths: string[]) => void;
   runInit: () => void;
-  // Run the agent to learn the user's coding style and write the global profile.
-  learnProfile: (path?: string) => void;
+  // Run the agent to learn the user's coding style and write a named profile.
+  learnProfile: (name?: string) => void;
+  // Open the picker to choose which saved profile is active.
+  openProfilePicker: () => void;
 }
 
 export interface SlashCommand {
@@ -125,16 +130,39 @@ const commands: SlashCommand[] = [
   },
   {
     name: "learn",
-    description: "Analyze a project to learn your coding style → saves a profile used everywhere",
+    description: "Learn your coding style from this project into a named profile:  /learn [name]",
     run: (args, ctx) => ctx.learnProfile(args[0]),
   },
   {
+    name: "profiles",
+    description: "Pick which saved coding profile is active (web, desktop, mobile…)",
+    run: (_args, ctx) => ctx.openProfilePicker(),
+  },
+  {
     name: "profile",
-    description: "Show the learned coding profile (created by /learn)",
-    run: (_args, ctx) => {
-      const p = readProfile();
-      if (p) ctx.print("Your coding profile (applied to every project):\n\n" + p);
-      else ctx.print("No coding profile yet. Run /learn in a project that represents your style, and I'll learn it.");
+    description: "Show a coding profile:  /profile [name]   (defaults to the active one)",
+    run: (args, ctx) => {
+      const names = listProfileNames();
+      if (names.length === 0) {
+        ctx.print("No coding profiles yet. Run /learn <name> in a project that represents your style (e.g. /learn web).");
+        return;
+      }
+      const active = getActiveProfileName();
+      const name = args[0] || active || names[0]!;
+      const p = readProfileByName(name);
+      const header = `Profiles: ${names.map(n => (n === active ? `${n} (active)` : n)).join(", ")}\n`;
+      if (p) ctx.print(`${header}\n── ${name} ──\n${p}`);
+      else ctx.print(`${header}\nProfile "${name}" not found. Use one of: ${names.join(", ")}`);
+    },
+  },
+  {
+    name: "delprofile",
+    description: "Delete a saved coding profile:  /delprofile <name>",
+    run: (args, ctx) => {
+      const name = args[0];
+      if (!name) { ctx.print("Usage: /delprofile <name>. Existing: " + (listProfileNames().join(", ") || "(none)"), "error"); return; }
+      const ok = deleteProfileByName(name);
+      ctx.print(ok ? `Deleted profile "${name}".` : `No profile named "${name}".`, ok ? undefined : "error");
     },
   },
   {

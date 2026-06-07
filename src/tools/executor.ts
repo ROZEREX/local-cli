@@ -4,6 +4,10 @@ import { glob } from "glob";
 import { spawnSync } from "child_process";
 import { getConfig } from "../config";
 import { startServer, serverLogs, stopServer, listServers, getServer, waitForStartup } from "../proc";
+import {
+  readActiveProfile, getActiveProfileName, readProfileByName, writeProfileByName,
+  setActiveProfile, listProfileNames,
+} from "../profile";
 
 function resolvePath(p: string): string {
   if (!p) return getConfig().cwd;
@@ -311,6 +315,36 @@ export function listServersTool(): string {
     .join("\n");
 }
 
+// ─── read_profile ─────────────────────────────────────────────────────────────
+export function readProfileTool(args: { name?: string }): string {
+  const name = args.name || getActiveProfileName();
+  if (!name) {
+    const all = listProfileNames();
+    return all.length
+      ? `No active profile selected. Existing profiles: ${all.join(", ")}. The user can pick one with /profiles.`
+      : "No coding profile exists yet. You can create one with update_profile once you learn the user's style.";
+  }
+  const content = name === getActiveProfileName() ? readActiveProfile() : readProfileByName(name);
+  if (!content) return `Profile "${name}" is empty or not found.`;
+  return `Coding profile "${name}":\n\n${content}`;
+}
+
+// ─── update_profile ───────────────────────────────────────────────────────────
+export function updateProfileTool(args: { content?: string; name?: string; mode?: string }): string {
+  if (!args.content || !args.content.trim()) {
+    return "Error: content was not provided. Put the rule(s) to save inside the tool body.";
+  }
+  // Target the named profile, else the active one, else create "default".
+  const target = args.name || getActiveProfileName() || "default";
+  const mode = args.mode === "replace" ? "replace" : "append";
+  const existed = !!readProfileByName(target);
+  writeProfileByName(target, args.content, mode);
+  // Make sure the profile we just wrote is the one being used.
+  if (!getActiveProfileName()) setActiveProfile(target);
+  const verb = mode === "replace" ? "Saved" : existed ? "Appended to" : "Created";
+  return `${verb} coding profile "${target}". It will guide your work in every project from now on.`;
+}
+
 // Normalize common arg-name variations models emit, so a slightly-off tool call
 // still works (covers native tool calls too, not just the prompted parser).
 function normalizeArgs(args: any): any {
@@ -349,6 +383,8 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "server_logs": return serverLogsTool(args);
     case "stop_server": return stopServerTool(args);
     case "list_servers": return listServersTool();
+    case "read_profile": return readProfileTool(args);
+    case "update_profile": return updateProfileTool(args);
     default: return `Error: Unknown tool: ${name}`;
   }
 }

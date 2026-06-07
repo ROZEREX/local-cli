@@ -179,4 +179,34 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "read_profile",
+      description: "Read the user's saved coding profile — their cross-project style and conventions (stack, naming, structure, practices). Use it to recall how they like things built.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Profile name (defaults to the active profile)" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_profile",
+      description: "Save durable coding conventions to the user's coding profile so they persist into FUTURE projects (not just this chat). Use this — not just a chat reply — whenever you learn or are told a lasting preference about how this user builds software (stack, directory/file naming, where API/server code lives, tooling, testing). Default mode appends one or more short rules.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "The convention(s) to save, as short prescriptive markdown rules" },
+          mode: { type: "string", enum: ["append", "replace"], description: "append (default) adds to the profile; replace overwrites it" },
+          name: { type: "string", description: "Profile to write to (defaults to the active profile, or 'default')" },
+        },
+        required: ["content"],
+      },
+    },
+  },
 ];

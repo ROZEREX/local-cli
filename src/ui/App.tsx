@@ -21,7 +21,7 @@ import {
   GeneratingLine, type ToolView, type StatusState,
 } from "./components";
 import { expandSelection, readFilesAsContext } from "../files";
-import { learnProfileInstruction, profileFilePath } from "../profile";
+import { learnProfileInstruction, profileFilePath, listProfileNames, setActiveProfile, getActiveProfileName } from "../profile";
 import { stopAllServers } from "../proc";
 
 type Item =
@@ -40,6 +40,7 @@ type Overlay =
   | { kind: "plan" }
   | { kind: "model"; models: string[]; hints: Record<string, string>; loading: boolean }
   | { kind: "chats"; sessions: SessionMeta[] }
+  | { kind: "profiles"; names: string[] }
   | { kind: "files" };
 
 function summarize(name: string, argsJson: string): string {
@@ -55,6 +56,8 @@ function summarize(name: string, argsJson: string): string {
     case "server_logs": return a.id ? `logs ${a.id}` : "logs (latest)";
     case "stop_server": return a.id ? `stop ${a.id}` : "stop (latest)";
     case "list_servers": return "";
+    case "read_profile": return a.name ? a.name : "coding profile";
+    case "update_profile": return a.name ? `→ ${a.name}` : "coding profile";
     default: return argsJson;
   }
 }
@@ -66,6 +69,7 @@ function permDetail(name: string, args: any): string {
   if (name === "delete_file") return `delete ${args.path}`;
   if (name === "run_server") return `▶ start server: ${args.command}`;
   if (name === "stop_server") return `stop server ${args.id ?? "(latest)"}`;
+  if (name === "update_profile") return `save to coding profile${args.name ? ` "${args.name}"` : ""}:\n${(args.content ?? "").slice(0, 200)}`;
   return JSON.stringify(args);
 }
 
@@ -290,12 +294,22 @@ export function App({ autoResume = false }: AppProps) {
     );
   };
 
-  const learnProfile = (path?: string) => {
-    const target = path ? resolve(getConfig().cwd, path) : getConfig().cwd;
+  const learnProfile = (name?: string) => {
+    const profName = name || getActiveProfileName() || "default";
+    setActiveProfile(profName); // use this profile from now on
     runAgentTask(
-      `/learn — learning your coding style from ${path ?? "this project"}`,
-      `Set your working focus to: ${target}\n\n` + learnProfileInstruction(profileFilePath())
+      `/learn — learning your "${profName}" coding style from this project`,
+      learnProfileInstruction(profileFilePath(profName), profName)
     );
+  };
+
+  const openProfilePicker = () => {
+    const names = listProfileNames();
+    if (names.length === 0) {
+      commit({ kind: "system", text: "No profiles yet. Run /learn <name> in a project to create one (e.g. /learn web)." });
+      return;
+    }
+    setOverlay({ kind: "profiles", names });
   };
 
   // Global keys: shift+tab toggles plan mode, esc interrupts.
@@ -472,6 +486,7 @@ export function App({ autoResume = false }: AppProps) {
     addPaths,
     runInit,
     learnProfile,
+    openProfilePicker,
   });
 
   const onSubmit = async (raw: string) => {
@@ -574,6 +589,13 @@ export function App({ autoResume = false }: AppProps) {
           <FileBrowser
             startDir={getConfig().cwd}
             onConfirm={(paths) => { setOverlay(null); addPaths(paths); }}
+            onCancel={() => setOverlay(null)}
+          />
+        ) : overlay?.kind === "profiles" ? (
+          <SelectList
+            title="Select the active coding profile"
+            items={overlay.names.map(n => ({ label: n, value: n, hint: n === getActiveProfileName() ? "● active" : "" }))}
+            onSelect={(n) => { setActiveProfile(n); setOverlay(null); commit({ kind: "system", text: `Active coding profile: ${n}. I'll follow it in every project.` }); }}
             onCancel={() => setOverlay(null)}
           />
         ) : status === "idle" ? (

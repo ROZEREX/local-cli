@@ -1,6 +1,6 @@
 import { getConfig } from "./config";
 import { findProjectContext } from "./context";
-import { readProfile, resolvePackageManager } from "./profile";
+import { readActiveProfile, getActiveProfileName, resolvePackageManager } from "./profile";
 import { platform } from "os";
 
 export type Mode = "normal" | "plan" | "auto";
@@ -13,7 +13,8 @@ export function systemPrompt(opts: PromptOptions = {}): string {
   const cfg = getConfig();
   const mode = opts.mode ?? "normal";
   const project = findProjectContext(cfg.cwd);
-  const profile = readProfile();
+  const profile = readActiveProfile();
+  const profileName = getActiveProfileName();
   const { pm, source } = resolvePackageManager(cfg.cwd);
 
   const pmLine = pm
@@ -43,6 +44,8 @@ You have these tools. Use them proactively — do not ask permission to read fil
 - server_logs: read recent output from a background server (to verify it works or find runtime errors)
 - stop_server: stop a background server
 - list_servers: list background servers and their status
+- read_profile: read the user's saved coding profile (their cross-project style/conventions)
+- update_profile: save or append durable style/conventions to the user's coding profile so they persist into future projects
 
 # You are an AGENT, not a chatbot
 - You can directly read, write, edit, and delete files and run commands with your tools. USE THEM to do the work yourself.
@@ -72,6 +75,13 @@ You have these tools. Use them proactively — do not ask permission to read fil
 - Tell the user the URL (e.g. http://localhost:3000) so they can open it. Use stop_server when done or before restarting.
 - Use the project's package manager (above). If none is set and there's no lockfile, ask which to use before installing.
 
+# Remember what you learn — keep your memory current with tools, not just chat
+- You have persistent memory you should maintain YOURSELF, without being asked:
+  - The **coding profile** = how THIS USER likes to build things across ALL projects (stack, directory/file naming, conventions, tooling). When you discover or are told a durable preference of this kind, persist it by calling update_profile (append a short rule) — do NOT just acknowledge it in chat, because chat context is lost when the user switches folders or starts a new project.
+  - The **project context** (LOCALCLI.md) = facts specific to the CURRENT project. Put project-specific notes there with write_file/edit_file.
+- Decide which memory a new fact belongs in: reusable style → update_profile; this-project-only → LOCALCLI.md. If unsure, ask briefly, then save it.
+- Example: the user says "the API lives in /api outside src" or "we always use kebab-case files" — that's a durable convention → call update_profile so it applies to every future project.
+
 # Important
 - Do not invent file paths — verify they exist first with glob_files or list_dir.
 - Build the full thing the user asked for — if they ask for an app, make it actually work, not a stub.
@@ -92,8 +102,8 @@ You are currently in PLAN MODE. The user wants a plan before any action is taken
   const profileSection = profile
     ? `
 
-# User coding profile (HOW this user likes code written — follow it)
-The user taught you their style with /learn. Match these conventions — stack, directory/file naming, and practices — in everything you write, unless a specific project's context says otherwise.
+# Active coding profile${profileName ? ` — "${profileName}"` : ""} (HOW this user likes code written — follow it)
+Match these conventions — stack, directory/file naming, and practices — in everything you write, unless a specific project's context says otherwise. If you learn a new durable convention, save it with update_profile so it sticks.
 ${profile}`
     : "";
 
@@ -145,6 +155,10 @@ Read a background server's output (to verify it works or find errors), or stop i
 <server_logs id="srv1"></server_logs>
 <stop_server id="srv1"></stop_server>
 <list_servers></list_servers>
+
+Remember a durable coding convention so it applies to future projects:
+<read_profile></read_profile>
+<update_profile mode="append">- API code lives in /api at the project root, outside src/</update_profile>
 
 Read a file / list a dir / find files / search / delete:
 <read_file path="src/index.ts"></read_file>

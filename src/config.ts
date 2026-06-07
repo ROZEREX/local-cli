@@ -21,6 +21,9 @@ export interface Config {
   // Preferred package manager for this project. "auto" = detect from lockfiles
   // (and ask the user when ambiguous). Otherwise the agent is told to use this.
   packageManager: "auto" | "bun" | "npm" | "pnpm" | "yarn";
+  // Name of the active coding profile (in ~/.local-cli/profiles/<name>.md) that
+  // is injected into every prompt. "" = none selected (auto-use if only one).
+  activeProfile: string;
 }
 
 // Resolved lazily so tests can isolate their config via LOCAL_CLI_CONFIG_DIR
@@ -45,6 +48,7 @@ const DEFAULTS: Config = {
   toolMode: "auto",
   thinking: true,
   packageManager: "auto",
+  activeProfile: "",
 };
 
 let _config: Config | null = null;
