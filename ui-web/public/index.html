@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>local-cli</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand">
+        <span class="logo">◆</span>
+        <span class="title">local-cli</span>
+        <span id="conn" class="conn" title="connection">●</span>
+      </div>
+      <div class="meta">
+        <label class="model-pick">
+          <span class="dim">model</span>
+          <select id="model"></select>
+        </label>
+        <div class="ctx" title="context used / model limit">
+          <span class="dim">context</span>
+          <span id="ctx-used">0</span>
+          <span class="dim">/</span>
+          <span id="ctx-limit">0</span>
+          <span id="ctx-pct" class="pct">(0%)</span>
+        </div>
+        <button id="new-chat" class="ghost" title="New chat">new</button>
+      </div>
+    </header>
+
+    <main id="messages"></main>
+
+    <div id="composer">
+      <div id="live" class="live hidden"></div>
+      <form id="form">
+        <textarea id="input" rows="1" placeholder="Message local-cli…  (Enter to send, Shift+Enter for newline)"></textarea>
+        <button id="send" type="submit" title="Send">Send</button>
+        <button id="stop" type="button" class="hidden" title="Stop">Stop</button>
+      </form>
+      <div class="hint dim">Same agent core as the terminal — it can read, write, edit, run, and host your code in <span id="cwd"></span></div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

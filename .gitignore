@@ -41,8 +41,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .local-cli/
 
 # Test artifacts and scratch files — created during development, not part of
-# the project itself.
-_gl.tsx
-index.html
-cronometro/
-temporizador/
+# the project itself. Anchored to the repo root so they don't match files like
+# ui-web/public/index.html.
+/_gl.tsx
+/index.html
+/cronometro/
+/temporizador/
