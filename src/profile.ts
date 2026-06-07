@@ -212,11 +212,14 @@ export function packageManagerGuidance(cwd: string): string {
     const use = pick();
     return `- Package manager: the project's lockfile suggests ${preferred}, but ${preferred} is NOT installed on this machine. Use ${use} instead — it runs the same scripts (e.g. \`${use} install\`, \`${use} run dev\`). Do NOT attempt to install ${preferred}. Installed here: ${list}.`;
   }
-  if (available.length > 0) {
-    const use = pick();
-    return `- Package manager: no lockfile yet — use ${use} (e.g. \`${use} install\`, \`${use} run dev\`). Do NOT assume npm; only these are installed: ${list}.`;
+  if (available.length === 1) {
+    const use = available[0]!;
+    return `- Package manager: no lockfile yet — use ${use} (the only one installed: \`${use} install\`, \`${use} run dev\`). Do NOT assume npm.`;
   }
-  return `- Package manager: none detected on this machine. Ask the user which to use before installing.`;
+  if (available.length > 1) {
+    return `- Package manager: no lockfile yet and several are installed (${list}). Use the ask_user tool to ask which one to use BEFORE installing/running, then use that for the rest of the session. Do NOT just assume npm.`;
+  }
+  return `- Package manager: none detected on this machine. Ask the user which to use (ask_user) before installing.`;
 }
 
 // Instruction for the `/learn` command. The agent explores the project, then

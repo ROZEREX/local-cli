@@ -237,6 +237,8 @@ export interface StreamCallbacks {
   onProgress?: (outTokensEstimate: number) => void;
   // Return false to deny a tool call. Mutating tools route through here.
   requestPermission?: (name: string, args: any) => Promise<boolean>;
+  // Ask the user to pick from options (the ask_user tool). Returns their answer.
+  requestChoice?: (question: string, options: string[]) => Promise<string>;
 }
 
 export interface ChatOptions {
@@ -293,6 +295,25 @@ async function runTool(
   callbacks: StreamCallbacks,
   options: ChatOptions
 ): Promise<string> {
+  // ask_user is interactive, not an action: pause and let the user pick. Allowed
+  // in every mode (asking never changes anything).
+  if (name === "ask_user") {
+    const question = String(args?.question ?? "").trim() || "Please choose:";
+    let opts: string[] = Array.isArray(args?.options)
+      ? args.options.map((o: any) => String(o)).filter(Boolean)
+      : typeof args?.options === "string"
+        ? args.options.split(/\||\n/).map((o: string) => o.trim()).filter(Boolean)
+        : [];
+    if (opts.length === 0) opts = ["Yes", "No"];
+    let answer = opts[0]!;
+    if (callbacks.requestChoice) {
+      try { answer = await callbacks.requestChoice(question, opts); } catch { /* keep default */ }
+    }
+    const r = `The user answered "${answer}" to: ${question}`;
+    callbacks.onToolResult(name, r);
+    return r;
+  }
+
   if (options.planMode && MUTATING_TOOLS.has(name)) {
     const r = `[plan mode] ${name} is blocked. You are planning, not executing — present your plan and wait for approval.`;
     callbacks.onToolResult(name, r);

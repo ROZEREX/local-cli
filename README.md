@@ -222,6 +222,11 @@ can spot runtime errors and fix them; `stop_server` / `list_servers` manage them
 Unlike `bash` (which runs to completion), servers keep running while you keep
 chatting, and are killed automatically when you quit.
 
+**Asking you:** `ask_user` lets the agent pop an interactive picker when a choice
+is genuinely yours to make — which package manager (when several are installed),
+framework, language, overwrite vs merge — instead of guessing or making you set it
+manually. It only asks when it can't infer the answer itself.
+
 **Memory:** `read_profile` / `update_profile` let the agent recall and persist
 your cross-project coding conventions on its own (see *Coding profiles* below).
 
@@ -252,9 +257,12 @@ the active profile itself** — no command needed — so the rule persists into 
 projects instead of being lost when you switch folders. Project-specific facts go
 to that project's `LOCALCLI.md` instead.
 
-**Package manager.** The agent detects yours from the lockfile (bun, npm, pnpm,
-yarn) and uses it; if there's no lockfile it asks which you want. Override any
-time with `/pm`.
+**Package manager.** The agent uses the one installed on your machine: it detects
+the project's lockfile *and* checks which managers actually exist on your system,
+so it never tries to run (or install) one you don't have — e.g. it uses `bun`
+instead of a missing `npm`. When several are installed and the project doesn't
+specify one, it **asks you with a picker** (via `ask_user`) rather than guessing.
+Lock a default any time with `/pm`.
 
 ## Configuration
 
@@ -308,7 +316,7 @@ src/
 
 ## Tests
 
-248 tests across tool execution, the splitter, native + **prompted** tool-calling
+280 tests across tool execution, the splitter, native + **prompted** tool-calling
 (XML raw-body format, full-file write verbatim, the `400` fallback), the diff,
 sessions/compaction/context, named coding profiles + agent-driven profile updates
 + package-manager detection, background servers (real processes, log capture, URL

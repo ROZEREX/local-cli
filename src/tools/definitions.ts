@@ -182,6 +182,21 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "ask_user",
+      description: "Ask the user to make a decision when something is genuinely ambiguous and you cannot infer the answer — e.g. which package manager (bun/npm/pnpm/yarn), framework, or language to use, or whether to overwrite vs merge. Shows an interactive picker and returns their choice. Prefer this over guessing or proceeding silently. Don't ask about things you can detect yourself.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The question to ask the user" },
+          options: { type: "array", items: { type: "string" }, description: "The choices to offer (2-6 short options)" },
+        },
+        required: ["question", "options"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_profile",
       description: "Read the user's saved coding profile — their cross-project style and conventions (stack, naming, structure, practices). Use it to recall how they like things built.",
       parameters: {

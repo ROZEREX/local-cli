@@ -65,6 +65,7 @@ export const toolIcon: Record<string, string> = {
   list_servers: "☰",
   read_profile: "◈",
   update_profile: "◈",
+  ask_user: "?",
 };
 
 // Accent color per tool, for the card's left border.
@@ -83,4 +84,5 @@ export const toolColor: Record<string, string> = {
   list_servers: theme.color.accent,
   read_profile: theme.color.primary,
   update_profile: theme.color.primary,
+  ask_user: theme.color.warn,
 };

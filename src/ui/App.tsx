@@ -41,6 +41,7 @@ type Overlay =
   | { kind: "model"; models: string[]; hints: Record<string, string>; loading: boolean }
   | { kind: "chats"; sessions: SessionMeta[] }
   | { kind: "profiles"; names: string[] }
+  | { kind: "choice"; question: string; options: string[]; resolve: (answer: string) => void }
   | { kind: "files" };
 
 function summarize(name: string, argsJson: string): string {
@@ -58,6 +59,7 @@ function summarize(name: string, argsJson: string): string {
     case "list_servers": return "";
     case "read_profile": return a.name ? a.name : "coding profile";
     case "update_profile": return a.name ? `→ ${a.name}` : "coding profile";
+    case "ask_user": return a.question ?? "";
     default: return argsJson;
   }
 }
@@ -376,6 +378,11 @@ export function App({ autoResume = false }: AppProps) {
                 });
               });
             },
+            requestChoice: async (question, opts) => {
+              return new Promise<string>((res) => {
+                setOverlay({ kind: "choice", question, options: opts, resolve: res });
+              });
+            },
           },
           { signal: ac.signal, planMode: modeRef.current === "plan", autoAccept: modeRef.current === "auto" }
         );
@@ -597,6 +604,13 @@ export function App({ autoResume = false }: AppProps) {
             items={overlay.names.map(n => ({ label: n, value: n, hint: n === getActiveProfileName() ? "● active" : "" }))}
             onSelect={(n) => { setActiveProfile(n); setOverlay(null); commit({ kind: "system", text: `Active coding profile: ${n}. I'll follow it in every project.` }); }}
             onCancel={() => setOverlay(null)}
+          />
+        ) : overlay?.kind === "choice" ? (
+          <SelectList
+            title={overlay.question}
+            items={overlay.options.map(o => ({ label: o, value: o }))}
+            onSelect={(answer) => { const r = overlay.resolve; setOverlay(null); commit({ kind: "system", text: `${overlay.question}  →  ${answer}` }); r(answer); }}
+            onCancel={() => { const r = overlay.resolve; const first = overlay.options[0] ?? ""; setOverlay(null); r(first); }}
           />
         ) : status === "idle" ? (
           <PromptInput
