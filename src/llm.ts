@@ -4,7 +4,7 @@ import { getConfig } from "./config";
 import { TOOL_DEFINITIONS } from "./tools/definitions";
 import { executeTool, canonicalToolName } from "./tools/executor";
 import { detectToolSupport, isOllama, modelCapabilities } from "./ollama";
-import { parseToolCalls, ProseFilter } from "./toolparse";
+import { parseToolCalls, ProseFilter, NarrationFilter } from "./toolparse";
 import { promptedToolInstructions } from "./prompt";
 
 let _client: OpenAI | null = null;
@@ -161,10 +161,15 @@ async function* ollamaStream(params: any, signal?: AbortSignal): AsyncGenerator<
         } as ChatCompletionChunk;
         // Ollama's final message carries real token counts + timing.
         if (json.done) {
+          // eval_duration is in nanoseconds; guard against 0/absurd values that
+          // would make tok/s explode (we once showed "1000000 t/s").
+          const dur = json.eval_duration;
+          let tps = json.eval_count && dur && dur > 0 ? json.eval_count / (dur / 1e9) : 0;
+          if (!Number.isFinite(tps) || tps < 0 || tps > 100000) tps = 0;
           (chunk as any).usage = {
             prompt_tokens: json.prompt_eval_count ?? 0,
             completion_tokens: json.eval_count ?? 0,
-            tok_per_sec: json.eval_count && json.eval_duration ? json.eval_count / (json.eval_duration / 1e9) : 0,
+            tok_per_sec: tps,
           };
         }
         yield chunk;
@@ -392,6 +397,9 @@ async function nativeTurn(
   let assistantText = "";
   let genChars = 0;
   const toolCallsByIndex = new Map<number, { id: string; name: string; args: string }>();
+  // Hide tool calls the model PRINTS as ```json blocks (qwen-coder does this) from
+  // the live display, while keeping the full text for parsing/the fallback.
+  const narr = new NarrationFilter();
 
   try {
     const stream = await createStream(
@@ -413,7 +421,11 @@ async function nativeTurn(
       if (u) callbacks.onUsage?.({ inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens, tokPerSec: u.tok_per_sec });
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
-      if (delta.content) { assistantText += delta.content; genChars += delta.content.length; callbacks.onText(delta.content); }
+      if (delta.content) {
+        assistantText += delta.content; genChars += delta.content.length;
+        const visible = narr.push(delta.content);
+        if (visible) callbacks.onText(visible);
+      }
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
           const idx = tc.index ?? 0;
@@ -426,6 +438,8 @@ async function nativeTurn(
       }
       callbacks.onProgress?.(Math.round(genChars / 4));
     }
+    const tail = narr.flush();
+    if (tail) callbacks.onText(tail);
   } catch (err: any) {
     const msg = String(err?.message ?? err);
     if (/does not support tools/i.test(msg) || /tools.*not supported/i.test(msg)) return "fallback";

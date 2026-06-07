@@ -14,6 +14,8 @@
 // FALLBACKS (kept for robustness): <tool_call>{json}</tool_call>, ```json fences,
 // and a bare {"name","arguments"} object.
 
+import { canonicalToolName } from "./tools/executor";
+
 export interface ParsedToolCall {
   name: string;
   arguments: any;
@@ -166,6 +168,59 @@ export function parseToolCalls(content: string): ParsedToolCall[] {
 
 export function hasToolCall(content: string): boolean {
   return parseToolCalls(content).length > 0;
+}
+
+// True when `text` parses to a call for a KNOWN tool (after alias normalization).
+// Used to recognize a narrated tool call (e.g. a ```json block) vs. a real code
+// block the user actually wants to see.
+export function isToolCallText(text: string): boolean {
+  const calls = parseToolCalls(text);
+  return calls.length > 0 && calls.some(c => TOOL_NAMES.includes(canonicalToolName(c.name)));
+}
+
+// ─── Narration filter ─────────────────────────────────────────────────────────
+// Some models (e.g. qwen-coder) PRINT a tool call as a ```json … ``` block in
+// their visible text instead of using the tool interface. We still execute those
+// (see the native fallback), but they shouldn't flood the screen. This streaming
+// filter passes prose and genuine code fences through, but drops a fenced block
+// whose contents parse as a known tool call. Boundary-safe across chunks.
+export class NarrationFilter {
+  private buf = "";
+
+  push(chunk: string): string {
+    this.buf += chunk;
+    let out = "";
+    while (true) {
+      const start = this.buf.indexOf("```");
+      if (start === -1) {
+        // Emit all but up to 2 trailing backticks (possible start of a fence).
+        let trailing = 0;
+        for (let i = this.buf.length - 1; i >= 0 && this.buf.length - i <= 2 && this.buf[i] === "`"; i--) trailing++;
+        const emitLen = this.buf.length - trailing;
+        out += this.buf.slice(0, emitLen);
+        this.buf = this.buf.slice(emitLen);
+        break;
+      }
+      out += this.buf.slice(0, start);
+      const close = this.buf.indexOf("```", start + 3);
+      if (close === -1) { this.buf = this.buf.slice(start); break; } // incomplete fence — hold
+      const block = this.buf.slice(start, close + 3);
+      const inner = this.buf.slice(start + 3, close).replace(/^[ \t]*[a-zA-Z0-9_]*[ \t]*\r?\n/, "");
+      if (!isToolCallText(inner.trim())) out += block; // keep real code; drop tool-call narration
+      this.buf = this.buf.slice(close + 3);
+    }
+    return out;
+  }
+
+  flush(): string {
+    const o = this.buf;
+    this.buf = "";
+    if (o.startsWith("```")) {
+      const inner = o.slice(3).replace(/^[ \t]*[a-zA-Z0-9_]*[ \t]*\r?\n/, "");
+      if (isToolCallText(inner.trim())) return "";
+    }
+    return o;
+  }
 }
 
 // ─── Prose filter ─────────────────────────────────────────────────────────────
