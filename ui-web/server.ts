@@ -153,7 +153,9 @@ function newChat(ws: ServerWebSocket<WSData>) {
   pushContext(ws);
 }
 
-const server = Bun.serve<WSData>({
+let server: import("bun").Server<WSData>;
+try {
+server = Bun.serve<WSData>({
   port: PORT,
   async fetch(req, server) {
     const url = new URL(req.url);
@@ -295,6 +297,16 @@ const server = Bun.serve<WSData>({
     close(ws) { ws.data.abort?.abort(); ws.data.pending.clear(); },
   },
 });
+} catch (e: any) {
+  if (String(e?.message ?? e).match(/EADDRINUSE|in use|already/i)) {
+    console.error(`\n  ✗ Port ${PORT} is already in use — another local-cli web server is probably still running.\n` +
+      `    Stop the old one first (close its terminal / kill the process), then run \`bun run web\` again,\n` +
+      `    or start this one on another port:  PORT=4318 bun run web\n`);
+  } else {
+    console.error("\n  ✗ Failed to start web UI:", e?.message ?? e, "\n");
+  }
+  process.exit(1);
+}
 
 function serverList() {
   return listServers().map(p => ({ id: p.id, status: p.status, url: p.url, command: p.command, exitCode: p.exitCode }));
