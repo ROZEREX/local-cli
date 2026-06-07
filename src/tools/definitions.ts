@@ -106,7 +106,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
         properties: {
           command: { type: "string", description: "The shell command to execute" },
           cwd: { type: "string", description: "Working directory for the command" },
-          timeout: { type: "number", description: "Timeout in milliseconds (default: 30000)" },
+          timeout: { type: "number", description: "Timeout in milliseconds. Defaults to 120000 (2 min), or 300000 (5 min) for installs/builds. Raise it for unusually long commands." },
         },
         required: ["command"],
       },

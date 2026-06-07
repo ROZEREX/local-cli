@@ -229,10 +229,18 @@ export function listDir(args: { path?: string }): string {
   }
 }
 
+// Commands that legitimately take a while (package installs, builds, tests,
+// docker, etc.) get a longer default timeout so they aren't killed mid-run.
+const LONG_RUNNING_CMD = /\b(install|ci|update|upgrade|add|build|compile|bundle|test|prune|dedupe|rebuild|docker|gradle|mvn|cargo|pip|composer|webpack|vite build|tsc)\b/i;
+
+function defaultBashTimeout(command: string): number {
+  return LONG_RUNNING_CMD.test(command) ? 300_000 : 120_000; // 5 min vs 2 min
+}
+
 // ─── bash ─────────────────────────────────────────────────────────────────────
 export function bashExec(args: { command: string; cwd?: string; timeout?: number }): string {
   const cwd = args.cwd ? resolvePath(args.cwd) : getConfig().cwd;
-  const timeout = args.timeout ?? 30000;
+  const timeout = args.timeout ?? defaultBashTimeout(args.command);
   try {
     const isWin = process.platform === "win32";
     const shell = isWin ? "powershell.exe" : "bash";
@@ -244,11 +252,25 @@ export function bashExec(args: { command: string; cwd?: string; timeout?: number
       encoding: "utf-8",
       maxBuffer: 10 * 1024 * 1024,
     });
+
+    // Timeout: spawnSync sets error.code ETIMEDOUT (and SIGTERM). Make it clear
+    // rather than surfacing the raw "spawnSync powershell.exe ETIMEDOUT".
+    const errCode = (result.error as any)?.code;
+    if (errCode === "ETIMEDOUT" || result.signal === "SIGTERM") {
+      const partial = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+      return `Command timed out after ${Math.round(timeout / 1000)}s: ${args.command}\n` +
+        (partial ? `Partial output:\n${partial}\n` : "") +
+        `If it genuinely needs longer, re-run with a larger timeout. For a long-lived process (a dev server/host), use run_server instead of bash.`;
+    }
+    if (result.error) {
+      return `Error executing command: ${result.error.message}`;
+    }
+
     const out = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-    const exit = result.status ?? (result.error ? 1 : 0);
+    const exit = result.status ?? 0;
     return exit === 0
       ? out || "(no output)"
-      : `Exit ${exit}:\n${out || result.error?.message || "(no output)"}`;
+      : `Exit ${exit}:\n${out || "(no output)"}`;
   } catch (e: any) {
     return `Error executing command: ${e.message}`;
   }

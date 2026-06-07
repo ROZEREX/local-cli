@@ -66,6 +66,14 @@ const run = async () => {
   r = await executeTool("bash", { command: "exit 3" });
   check("bash reports non-zero exit", r.includes("Exit 3"), r);
 
+  // bash timeout — a command that sleeps past a tiny explicit timeout returns a
+  // clear "timed out" message, not a raw ETIMEDOUT.
+  const isWin = process.platform === "win32";
+  const sleepCmd = isWin ? "Start-Sleep -Seconds 5" : "sleep 5";
+  r = await executeTool("bash", { command: sleepCmd, timeout: 400 });
+  check("bash timeout returns a clear message", r.includes("timed out after") && !r.includes("ETIMEDOUT"), r);
+  check("bash timeout suggests run_server for long-lived processes", r.includes("run_server"), r);
+
   // arg normalization — native tool calls may use aliases instead of "path"
   r = await executeTool("write_file", { file: "alias.txt", content: "via alias" });
   check("write_file accepts 'file' alias for path", r.includes("Written"), r);
