@@ -367,8 +367,41 @@ function normalizeArgs(args: any): any {
   return args;
 }
 
+// Models often invent slightly different tool names (especially code models that
+// narrate calls as text). Map the common ones onto our real tools so the call
+// still runs instead of failing with "Unknown tool".
+const TOOL_ALIASES: Record<string, string> = {
+  // list_dir
+  read_dir: "list_dir", readdir: "list_dir", list_directory: "list_dir", listdir: "list_dir", ls: "list_dir", dir: "list_dir",
+  // read_file
+  cat: "read_file", open_file: "read_file", view_file: "read_file", get_file: "read_file", openfile: "read_file",
+  // write_file
+  create_file: "write_file", new_file: "write_file", save_file: "write_file", writefile: "write_file", createfile: "write_file",
+  // edit_file
+  modify_file: "edit_file", replace_in_file: "edit_file", update_file: "edit_file", apply_patch: "edit_file", str_replace: "edit_file", patch_file: "edit_file",
+  // delete_file
+  remove_file: "delete_file", rm: "delete_file", del: "delete_file", unlink: "delete_file", deletefile: "delete_file",
+  // glob_files
+  find: "glob_files", find_files: "glob_files", glob: "glob_files", findfiles: "glob_files",
+  // grep_files
+  search: "grep_files", grep: "grep_files", search_files: "grep_files", ripgrep: "grep_files", rg: "grep_files",
+  // bash
+  run: "bash", shell: "bash", exec: "bash", execute: "bash", run_command: "bash", run_shell: "bash", terminal: "bash", sh: "bash", command: "bash",
+  // run_server
+  start_server: "run_server", run_dev: "run_server", serve: "run_server", dev_server: "run_server",
+  // stop_server
+  kill_server: "stop_server",
+  // server_logs
+  logs: "server_logs", get_logs: "server_logs", tail_logs: "server_logs",
+};
+
+export function canonicalToolName(name: string): string {
+  return TOOL_ALIASES[name] ?? name;
+}
+
 // ─── dispatcher ───────────────────────────────────────────────────────────────
 export async function executeTool(name: string, args: any): Promise<string> {
+  name = canonicalToolName(name);
   args = normalizeArgs(args);
   switch (name) {
     case "read_file": return readFile(args);

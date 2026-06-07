@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam, ChatCompletionChunk } from "openai/resources/chat/completions";
 import { getConfig } from "./config";
 import { TOOL_DEFINITIONS } from "./tools/definitions";
-import { executeTool } from "./tools/executor";
+import { executeTool, canonicalToolName } from "./tools/executor";
 import { detectToolSupport, isOllama, modelCapabilities } from "./ollama";
 import { parseToolCalls, ProseFilter } from "./toolparse";
 import { promptedToolInstructions } from "./prompt";
@@ -453,12 +453,29 @@ async function nativeTurn(
     });
   }
 
-  if (toolCalls.length === 0) return "done";
+  if (toolCalls.length === 0) {
+    // Some models (notably qwen-coder) emit a tool call as text — a ```json
+    // block or an XML tag — instead of using the native tool_calls field, so the
+    // SDK reports none. Parse the content and run them as a fallback, feeding the
+    // results back as a user message (prompted style) so the loop continues.
+    const parsed = parseToolCalls(storedText);
+    if (parsed.length > 0) {
+      const norm: NormCall[] = parsed.map(c => ({ name: canonicalToolName(c.name), args: c.arguments, rawArgs: JSON.stringify(c.arguments) }));
+      const results = await executeCalls(norm, callbacks, options);
+      const responses = results.map(r => `<tool_response name="${r.name}">\n${r.result}\n</tool_response>`);
+      history.push({
+        role: "user",
+        content: `${responses.join("\n")}\n\nContinue: issue the next tool call, or give your final response. Prefer the native tool-call interface over writing tool calls as text.`,
+      });
+      return "continue";
+    }
+    return "done";
+  }
 
   const norm: NormCall[] = toolCalls.map(tc => {
     let args: any = {};
     try { args = JSON.parse(tc.args || "{}"); } catch {}
-    return { id: tc.id, name: tc.name, args, rawArgs: tc.args };
+    return { id: tc.id, name: canonicalToolName(tc.name), args, rawArgs: tc.args };
   });
   const results = await executeCalls(norm, callbacks, options);
   for (const r of results) history.push({ role: "tool", tool_call_id: r.id!, content: r.result });
@@ -525,7 +542,7 @@ async function promptedTurn(
   const calls = parseToolCalls(cleanRaw);
   if (calls.length === 0) return false; // final answer
 
-  const norm: NormCall[] = calls.map(call => ({ name: call.name, args: call.arguments, rawArgs: JSON.stringify(call.arguments) }));
+  const norm: NormCall[] = calls.map(call => ({ name: canonicalToolName(call.name), args: call.arguments, rawArgs: JSON.stringify(call.arguments) }));
   const results = await executeCalls(norm, callbacks, options);
   const responses = results.map(r => `<tool_response name="${r.name}">\n${r.result}\n</tool_response>`);
   history.push({
