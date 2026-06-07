@@ -1,7 +1,7 @@
 // Tests for RepetitionGuard (stops degenerate repeat loops) and HarmonyStripper
 // (removes <|channel|>… markup that models like gemma leak into content).
 import "./test-config-setup";
-import { RepetitionGuard, HarmonyStripper } from "./src/think";
+import { RepetitionGuard, HarmonyStripper, HarmonyFilter } from "./src/think";
 import { getConfig } from "./src/config";
 
 let pass = 0, fail = 0;
@@ -74,6 +74,26 @@ for (const cs of [1, 4, 1000]) {
 
 check("leaves ordinary text untouched", strip("just a normal answer with code `x < y`", 5) === "just a normal answer with code `x < y`");
 check("keeps a lone '<' that isn't a token", strip("if a < b then", 3) === "if a < b then");
+
+// ── HarmonyFilter: channel routing ──
+function harmonize(text: string, chunk: number): string {
+  const f = new HarmonyFilter();
+  let out = "";
+  for (let i = 0; i < text.length; i += chunk) out += f.push(text.slice(i, i + chunk));
+  out += f.flush();
+  return out;
+}
+const hSample = "<|start|>assistant<|channel|>analysis<|message|>Let me check the files.<|end|>" +
+  "<|channel|>commentary to=functions.list_dir <|constrain|>json<|message|>{\"path\":\".\"}<|call|>" +
+  "<|channel|>final<|message|>Here is the result.";
+for (const cs of [1, 5, 1000]) {
+  const out = harmonize(hSample, cs);
+  check(`harmony: analysis wrapped in <think> (chunk=${cs})`, out.includes("<think>Let me check the files.</think>"), JSON.stringify(out));
+  check(`harmony: tool narration dropped (chunk=${cs})`, !out.includes("functions.list_dir") && !out.includes('"path"'), JSON.stringify(out));
+  check(`harmony: final answer kept (chunk=${cs})`, out.includes("Here is the result."), JSON.stringify(out));
+}
+check("harmony: plain text passes through", harmonize("just a normal answer.", 4) === "just a normal answer.");
+check("harmony: closes an open think on flush", harmonize("<|channel|>analysis<|message|>thinking…", 3) === "<think>thinking…</think>");
 
 console.log(`\n${fail === 0 ? "STREAM-GUARDS OK" : "STREAM-GUARDS FAILED"}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

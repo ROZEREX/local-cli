@@ -159,6 +159,84 @@ export class HarmonyStripper {
   }
 }
 
+// Channel-aware filter for the "harmony" format some models (gemma3/4, gpt-oss)
+// emit inline: <|start|>assistant<|channel|>analysis<|message|>…<|end|>,
+// <|channel|>commentary to=functions.list_dir<|message|>{json}<|call|>,
+// <|channel|>final<|message|>answer. We route:
+//   analysis/thought/reasoning  -> reasoning, wrapped in <think>…</think> (dimmed)
+//   commentary/tool/functions   -> dropped (those are tool-call narration; the
+//                                   tool runs via the real interface, not as text)
+//   final / anything else       -> the visible answer
+// Boundary-safe across chunks; plain text with no <|…|> tokens passes through.
+const HARMONY_THINK = new Set(["analysis", "thought", "thinking", "reasoning"]);
+const HARMONY_DROP = new Set(["commentary", "tool", "tools", "functions"]);
+
+export class HarmonyFilter {
+  private buf = "";
+  private state: "emit" | "name" = "emit";
+  private channel = "final";
+  private nameBuf = "";
+  private inThink = false;
+
+  push(chunk: string): string { this.buf += chunk; return this.drain(false); }
+  flush(): string { let out = this.drain(true); if (this.inThink) { out += "</think>"; this.inThink = false; } return out; }
+
+  private drain(final: boolean): string {
+    let out = "";
+    for (;;) {
+      const i = this.buf.indexOf("<|");
+      if (i === -1) {
+        // No token start. Hold a trailing lone "<" (could begin "<|") unless final.
+        let end = this.buf.length;
+        if (!final && this.buf.endsWith("<")) end -= 1;
+        out += this.route(this.buf.slice(0, end));
+        this.buf = this.buf.slice(end);
+        return out;
+      }
+      const j = this.buf.indexOf("|>", i);
+      if (j === -1) {
+        // Incomplete token: emit text before it, hold the rest (drop it on flush).
+        out += this.route(this.buf.slice(0, i));
+        this.buf = final ? "" : this.buf.slice(i);
+        return out;
+      }
+      out += this.route(this.buf.slice(0, i));
+      const token = this.buf.slice(i, j + 2);
+      this.buf = this.buf.slice(j + 2);
+      out += this.handle(token);
+    }
+  }
+
+  private handle(token: string): string {
+    const name = token.slice(2, -2).trim().toLowerCase();
+    if (name === "channel" || name === "start") { this.state = "name"; this.nameBuf = ""; return ""; }
+    if (name === "message") {
+      const ch = this.nameBuf.trim().split(/\s+/)[0]?.toLowerCase();
+      if (ch) this.channel = ch;
+      this.state = "emit";
+      return "";
+    }
+    if (name === "end" || name === "call" || name === "return") {
+      this.channel = "final"; this.state = "emit";
+      if (this.inThink) { this.inThink = false; return "</think>"; }
+      return "";
+    }
+    return ""; // <|constrain|> and any other control token: ignore
+  }
+
+  private route(text: string): string {
+    if (!text) return "";
+    if (this.state === "name") { this.nameBuf += text; return ""; }
+    if (HARMONY_DROP.has(this.channel)) return "";
+    if (HARMONY_THINK.has(this.channel)) {
+      if (!this.inThink) { this.inThink = true; return "<think>" + text; }
+      return text;
+    }
+    if (this.inThink) { this.inThink = false; return "</think>" + text; }
+    return text;
+  }
+}
+
 // Backwards-compatible reasoning splitter built on TagSplitter.
 export interface Segment {
   text: string;

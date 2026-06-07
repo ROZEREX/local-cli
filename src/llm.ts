@@ -5,7 +5,7 @@ import { TOOL_DEFINITIONS } from "./tools/definitions";
 import { executeTool, canonicalToolName } from "./tools/executor";
 import { detectToolSupport, isOllama, modelCapabilities } from "./ollama";
 import { parseToolCalls, ProseFilter, NarrationFilter } from "./toolparse";
-import { RepetitionGuard, HarmonyStripper } from "./think";
+import { RepetitionGuard, HarmonyFilter } from "./think";
 import { promptedToolInstructions } from "./prompt";
 
 let _client: OpenAI | null = null;
@@ -422,7 +422,7 @@ async function nativeTurn(
   // Hide tool calls the model PRINTS as ```json blocks (qwen-coder does this) from
   // the live display, while keeping the full text for parsing/the fallback.
   const narr = new NarrationFilter();
-  const harmony = new HarmonyStripper();   // strip <|channel|>… markup (gemma)
+  const harmony = new HarmonyFilter();     // route <|channel|>… (gemma/gpt-oss): analysis→think, drop tool narration
   const rep = new RepetitionGuard();       // stop degenerate repeat loops (opt-in)
   const guardOn = cfg.loopGuard === true;
   let looped = false;
