@@ -63,6 +63,71 @@ export class TagSplitter {
   }
 }
 
+// Detects when a model is stuck repeating itself (a degenerate generation loop —
+// e.g. gemma repeating the same paragraph for thousands of tokens). Fed the
+// streamed text; trips once any substantial line has recurred `threshold` times.
+export class RepetitionGuard {
+  private buf = "";
+  private counts = new Map<string, number>();
+  private _tripped = false;
+  constructor(private threshold = 6, private minLen = 24) {}
+
+  // Returns true once a loop is detected.
+  push(text: string): boolean {
+    if (this._tripped) return true;
+    this.buf += text;
+    let nl: number;
+    while ((nl = this.buf.indexOf("\n")) !== -1) {
+      this.record(this.buf.slice(0, nl));
+      this.buf = this.buf.slice(nl + 1);
+      if (this._tripped) return true;
+    }
+    // Some models stream without newlines — flush a long line-less buffer too.
+    if (this.buf.length > 4000) { this.record(this.buf); this.buf = ""; }
+    return this._tripped;
+  }
+
+  private record(line: string): void {
+    const norm = line.trim().toLowerCase().replace(/\s+/g, " ");
+    if (norm.length < this.minLen) return;
+    const c = (this.counts.get(norm) ?? 0) + 1;
+    this.counts.set(norm, c);
+    if (c >= this.threshold) this._tripped = true;
+  }
+
+  get tripped(): boolean { return this._tripped; }
+}
+
+// Strips "harmony" channel control tokens that some models (gemma, gpt-oss) emit
+// inline — <|channel|>analysis<|message|>…<|end|>, <|start|>, <|return|>, etc. —
+// so they don't render as raw garbage or pollute history. Boundary-safe: holds a
+// trailing partial "<|…" until it completes. Channel content itself is kept as
+// plain text (the reasoning stays visible, just without the markup).
+export class HarmonyStripper {
+  private buf = "";
+  private static TOKEN = /<\|[^>]*\|>/g;
+
+  push(chunk: string): string {
+    this.buf += chunk;
+    // Hold back a trailing, possibly-incomplete "<|…" token until it closes.
+    let processUpTo = this.buf.length;
+    const lt = this.buf.lastIndexOf("<");
+    if (lt !== -1) {
+      const rest = this.buf.slice(lt);
+      if (rest.startsWith("<") && !rest.includes(">") && rest.length < 40) processUpTo = lt;
+    }
+    const head = this.buf.slice(0, processUpTo);
+    this.buf = this.buf.slice(processUpTo);
+    return head.replace(HarmonyStripper.TOKEN, "");
+  }
+
+  flush(): string {
+    const o = this.buf.replace(HarmonyStripper.TOKEN, "");
+    this.buf = "";
+    return o;
+  }
+}
+
 // Backwards-compatible reasoning splitter built on TagSplitter.
 export interface Segment {
   text: string;

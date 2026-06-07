@@ -5,6 +5,7 @@ import { TOOL_DEFINITIONS } from "./tools/definitions";
 import { executeTool, canonicalToolName } from "./tools/executor";
 import { detectToolSupport, isOllama, modelCapabilities } from "./ollama";
 import { parseToolCalls, ProseFilter, NarrationFilter } from "./toolparse";
+import { RepetitionGuard, HarmonyStripper } from "./think";
 import { promptedToolInstructions } from "./prompt";
 
 let _client: OpenAI | null = null;
@@ -421,6 +422,9 @@ async function nativeTurn(
   // Hide tool calls the model PRINTS as ```json blocks (qwen-coder does this) from
   // the live display, while keeping the full text for parsing/the fallback.
   const narr = new NarrationFilter();
+  const harmony = new HarmonyStripper();   // strip <|channel|>… markup (gemma)
+  const rep = new RepetitionGuard();       // stop degenerate repeat loops
+  let looped = false;
 
   try {
     const stream = await createStream(
@@ -443,9 +447,14 @@ async function nativeTurn(
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
       if (delta.content) {
-        assistantText += delta.content; genChars += delta.content.length;
-        const visible = narr.push(delta.content);
-        if (visible) callbacks.onText(visible);
+        const clean = harmony.push(delta.content);
+        if (clean) {
+          assistantText += clean; genChars += clean.length;
+          if (rep.push(clean)) looped = true;
+          const visible = narr.push(clean);
+          if (visible) callbacks.onText(visible);
+          if (looped) break;
+        }
       }
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
@@ -459,6 +468,10 @@ async function nativeTurn(
       }
       callbacks.onProgress?.(Math.round(genChars / 4));
     }
+    if (!looped) {
+      const hTail = harmony.flush();
+      if (hTail) { assistantText += hTail; const v = narr.push(hTail); if (v) callbacks.onText(v); }
+    }
     const tail = narr.flush();
     if (tail) callbacks.onText(tail);
   } catch (err: any) {
@@ -466,6 +479,15 @@ async function nativeTurn(
     if (/does not support tools/i.test(msg) || /tools.*not supported/i.test(msg)) return "fallback";
     if (err?.name === "AbortError") return "done";
     callbacks.onError(err);
+    return "done";
+  }
+
+  // The model got stuck repeating itself — stop the turn cleanly instead of
+  // letting it burn thousands of tokens, and keep history small.
+  if (looped) {
+    callbacks.onNotice?.("Stopped: the model was repeating itself. The task may already be done — check the result. If it keeps looping, try /compact, or switch to a stronger code model (e.g. qwen2.5-coder).");
+    const kept = stripThink(assistantText).slice(0, 1500);
+    history.push({ role: "assistant", content: kept || "(response stopped — the model was repeating itself)" });
     return "done";
   }
 
@@ -531,6 +553,8 @@ async function promptedTurn(
 
   let raw = "";
   const prose = new ProseFilter();
+  const rep = new RepetitionGuard();
+  let looped = false;
 
   try {
     const stream = await createStream(
@@ -556,12 +580,19 @@ async function promptedTurn(
       // Show prose but hide raw tool-call markup; <think> is handled upstream.
       const visible = prose.push(text);
       if (visible) callbacks.onText(visible);
+      if (rep.push(text)) { looped = true; break; }
     }
     const tail = prose.flush();
     if (tail) callbacks.onText(tail);
   } catch (err: any) {
     if (err?.name === "AbortError") return false;
     callbacks.onError(err);
+    return false;
+  }
+
+  if (looped) {
+    callbacks.onNotice?.("Stopped: the model was repeating itself. The task may already be done — check the result. If it keeps looping, try /compact, or switch to a stronger code model (e.g. qwen2.5-coder).");
+    history.push({ role: "assistant", content: stripThink(raw).slice(0, 1500) || "(response stopped — the model was repeating itself)" });
     return false;
   }
 
