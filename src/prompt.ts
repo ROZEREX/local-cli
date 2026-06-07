@@ -1,6 +1,6 @@
 import { getConfig } from "./config";
 import { findProjectContext } from "./context";
-import { readActiveProfile, getActiveProfileName, resolvePackageManager } from "./profile";
+import { readActiveProfile, getActiveProfileName, packageManagerGuidance } from "./profile";
 import { platform } from "os";
 
 export type Mode = "normal" | "plan" | "auto";
@@ -15,11 +15,7 @@ export function systemPrompt(opts: PromptOptions = {}): string {
   const project = findProjectContext(cfg.cwd);
   const profile = readActiveProfile();
   const profileName = getActiveProfileName();
-  const { pm, source } = resolvePackageManager(cfg.cwd);
-
-  const pmLine = pm
-    ? `- Package manager: ${pm}${source === "detected" ? " (detected from lockfile)" : ""} — use ${pm} for installing/running scripts.`
-    : `- Package manager: unknown — there is no lockfile yet. Before running install/build commands, ASK the user whether to use bun, npm, pnpm, or yarn, then use that.`;
+  const pmLine = packageManagerGuidance(cfg.cwd);
 
   const base = `You are a local coding agent CLI, similar to Claude Code, running on the user's machine.
 You help with software engineering tasks: reading, writing, editing, and refactoring code, running commands, and answering questions about the codebase.
@@ -72,6 +68,7 @@ You have these tools. Use them proactively — do not ask permission to read fil
 # Running, hosting & debugging what you build
 - When the user asks to START, RUN, SERVE, or LAUNCH the project ("start my project", "run it", "spin it up"): do NOT go on a long exploration first. Read package.json (or the obvious manifest for the stack) to find the dev/start script, then immediately call run_server with it (e.g. \`npm run dev\` / \`bun run dev\` / \`php -S localhost:8000\`). Report the URL. Only investigate further if it fails to start.
 - Don't guess file paths and read_file blindly (that wastes turns on "file not found"). Use list_dir / glob_files to see what actually exists FIRST, then read only the files that are really there.
+- If a command fails with "not recognized" / "command not found", that tool is NOT installed on this machine. Switch to an equivalent that IS installed (see Package manager / Environment above) — e.g. use bun instead of npm. Do NOT try to install a package manager or runtime; use what's already there.
 - You have a real terminal. After building something runnable, actually run it to verify it works — don't just describe it.
 - For a command that FINISHES (install, build, test, lint, git, scaffolding like 'npm create'), use bash.
 - For a command that STAYS UP (a dev server, web host, watcher — 'npm run dev', 'bun run dev', 'vite', 'php -S localhost:8000', 'next dev'), use run_server, NOT bash. bash would block forever waiting for it to exit. run_server launches it in the background and returns the port/URL and startup output.

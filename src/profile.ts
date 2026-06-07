@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
+import { spawnSync } from "child_process";
+import { platform } from "os";
 import { configDir, getConfig, saveConfig } from "./config";
 
 // A "coding profile" is a personal, cross-project description of HOW the user
@@ -166,6 +168,55 @@ export function resolvePackageManager(cwd: string): { pm: PackageManager | null;
   const detected = detectPackageManager(cwd);
   if (detected) return { pm: detected, source: "detected" };
   return { pm: null, source: "unknown" };
+}
+
+// Which package managers are actually INSTALLED on this machine. A project may
+// have an npm lockfile, but if only bun is installed (this user's setup), the
+// agent must use bun — not try to install npm. Detected once and cached; tests
+// and power users can override via LOCAL_CLI_AVAILABLE_PM (comma-separated).
+let _availablePMs: PackageManager[] | null = null;
+export function availablePackageManagers(): PackageManager[] {
+  const override = process.env.LOCAL_CLI_AVAILABLE_PM;
+  if (override !== undefined) {
+    return override.split(",").map(s => s.trim()).filter(Boolean) as PackageManager[];
+  }
+  if (_availablePMs) return _availablePMs;
+  const candidates: PackageManager[] = ["bun", "npm", "pnpm", "yarn"];
+  const found: PackageManager[] = [];
+  for (const pm of candidates) {
+    try {
+      // shell:true so Windows resolves bun.cmd / npm.cmd on PATH.
+      const r = spawnSync(pm, ["--version"], { timeout: 4000, stdio: "ignore", shell: platform() === "win32" });
+      if (r.status === 0) found.push(pm);
+    } catch {
+      /* not installed */
+    }
+  }
+  _availablePMs = found;
+  return found;
+}
+
+// The full package-manager guidance line for the system prompt. Reconciles the
+// project's preferred manager (lockfile/config) with what's actually installed,
+// so the agent never tries to run or install a manager that isn't there.
+export function packageManagerGuidance(cwd: string): string {
+  const { pm: preferred, source } = resolvePackageManager(cwd);
+  const available = availablePackageManagers();
+  const list = available.length ? available.join(", ") : "none detected";
+  const pick = (): PackageManager => (available.includes("bun") ? "bun" : available[0]!);
+
+  if (preferred && available.includes(preferred)) {
+    return `- Package manager: use ${preferred}${source === "detected" ? " (from the project's lockfile)" : ""}. Installed on this machine: ${list}.`;
+  }
+  if (preferred && available.length > 0) {
+    const use = pick();
+    return `- Package manager: the project's lockfile suggests ${preferred}, but ${preferred} is NOT installed on this machine. Use ${use} instead — it runs the same scripts (e.g. \`${use} install\`, \`${use} run dev\`). Do NOT attempt to install ${preferred}. Installed here: ${list}.`;
+  }
+  if (available.length > 0) {
+    const use = pick();
+    return `- Package manager: no lockfile yet — use ${use} (e.g. \`${use} install\`, \`${use} run dev\`). Do NOT assume npm; only these are installed: ${list}.`;
+  }
+  return `- Package manager: none detected on this machine. Ask the user which to use before installing.`;
 }
 
 // Instruction for the `/learn` command. The agent explores the project, then

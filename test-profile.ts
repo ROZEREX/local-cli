@@ -67,12 +67,28 @@ resetConfigCache();
 saveConfig({ cwd: bunDir });
 let sp = systemPrompt();
 check("prompt includes the coding profile", sp.includes("kebab-case files"), "");
-check("prompt mentions detected package manager", sp.includes("bun") && sp.toLowerCase().includes("package manager"), "");
 
-// unknown package manager → prompt tells the agent to ask
+// bun lockfile + bun installed → use bun
+process.env.LOCAL_CLI_AVAILABLE_PM = "bun";
+sp = systemPrompt();
+check("prompt tells the agent to use the detected+installed manager", sp.includes("use bun") && sp.toLowerCase().includes("package manager"), "");
+
+// project suggests npm (lockfile) but only bun installed → use bun, don't install npm
+saveConfig({ cwd: npmDir, packageManager: "auto" });
+sp = systemPrompt();
+check("substitutes an installed PM when the project's PM is missing", sp.includes("npm is NOT installed") && sp.includes("Use bun"), sp.split("\n").find(l => l.includes("Package manager")) ?? "");
+check("warns against installing the missing PM", sp.includes("Do NOT attempt to install npm"), "");
+
+// no lockfile, bun installed → use bun, don't assume npm
 saveConfig({ cwd: emptyDir, packageManager: "auto" });
 sp = systemPrompt();
-check("prompt asks which PM when unknown", sp.includes("ASK the user whether to use bun, npm, pnpm, or yarn"), "");
+check("no lockfile → uses an installed PM (bun), not npm", sp.includes("no lockfile yet") && sp.includes("use bun"), "");
+
+// nothing installed → ask the user
+process.env.LOCAL_CLI_AVAILABLE_PM = "";
+sp = systemPrompt();
+check("prompt asks which PM when none installed", sp.includes("Ask the user which to use"), "");
+delete process.env.LOCAL_CLI_AVAILABLE_PM;
 
 // ─── multiple named profiles ──────────────────────────────────────────────────
 writeProfileByName("web", "# Web\n- React + Vite\n- kebab-case files");
