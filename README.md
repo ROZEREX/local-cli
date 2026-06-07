@@ -275,7 +275,7 @@ Notable keys (`/config <key> <value>`):
 | Key | Default | Meaning |
 |---|---|---|
 | `toolMode` | `auto` | `auto` detects native tool support per model; force with `native` / `prompted` |
-| `contextWindow` | `32768` | Token budget used for the status bar % and auto-compaction |
+| `contextWindow` | per-model | Auto-set to the selected model's native context length; used for the status bar count and auto-compaction. Override with `/config contextWindow N` |
 | `autoCompact` | `true` | Auto-summarize the conversation past 80% of the window |
 | `temperature` | `0.6` | Sampling temperature |
 
@@ -285,8 +285,11 @@ A full terminal UI built with [Ink](https://github.com/vadimdemedes/ink) (React
 for the terminal): a gradient header showing model + endpoint + cwd, streaming
 responses with markdown and dimmed `<think>` reasoning, per-tool cards with
 result previews, an interactive permission prompt, arrow-key pickers (models,
-sessions), a plan-approval prompt, and a live status bar showing mode, model,
-cwd, and context usage (`~18,400 (56%)`). `esc` interrupts an in-flight response.
+sessions), a plan-approval prompt, and a status bar showing mode, model, and
+context usage as a count against the model's limit (`18,400 / 32,768 (56%)`).
+While the model streams, a single live line shows tokens generated, elapsed time,
+and real-time tok/s; `esc` interrupts. The context window auto-adjusts to each
+model's native limit when you switch models.
 
 ## Project layout
 

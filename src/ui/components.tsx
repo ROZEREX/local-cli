@@ -212,31 +212,25 @@ const fmtTok = (n: number) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/,
 
 export function StatusBar({
   model,
-  cwd,
   tokens,
   contextWindow,
   status,
   mode,
-  readTok = 0,
-  writeTok = 0,
-  tps = 0,
 }: {
   model: string;
-  cwd: string;
   tokens: number;
   contextWindow: number;
   status: StatusState;
   mode: "normal" | "plan" | "auto";
-  readTok?: number;
-  writeTok?: number;
-  tps?: number;
 }) {
   const pct = Math.min(100, Math.round((tokens / contextWindow) * 100));
   const pctColor = pct > 85 ? theme.color.error : pct > 65 ? theme.color.warn : theme.color.dim;
 
+  // No spinner here — the GeneratingLine below is the single live/animated
+  // indicator. This bar just states the current status + persistent context info.
   const statusEl =
     status === "thinking" ? (
-      <Text color={theme.color.warn}><Spinner type="dots" /> working</Text>
+      <Text color={theme.color.warn}>{theme.icon.dot} working</Text>
     ) : status === "permission" ? (
       <Text color={theme.color.accent}>{theme.icon.warn} awaiting approval</Text>
     ) : (
@@ -255,26 +249,28 @@ export function StatusBar({
         <Text> {statusEl}</Text>
       </Box>
       <Box>
-        <Text color={theme.color.user}>↑{fmtTok(readTok)} </Text>
-        <Text color={theme.color.success}>↓{fmtTok(writeTok)}</Text>
-        {tps ? <Text color={theme.color.dim}> {Math.round(tps)} t/s</Text> : null}
-        <Text dimColor>   {theme.icon.model} </Text>
+        <Text dimColor>{theme.icon.model} </Text>
         <Text color={theme.color.primary}>{model}</Text>
-        <Text dimColor>   {theme.icon.tokens} </Text>
-        <Text color={pctColor}>{pct}%</Text>
+        <Text dimColor>   {theme.icon.tokens} context </Text>
+        <Text color={pctColor}>{tokens.toLocaleString()}</Text>
+        <Text dimColor> / {contextWindow.toLocaleString()} </Text>
+        <Text color={pctColor}>({pct}%)</Text>
       </Box>
     </Box>
   );
 }
 
-// ─── Generating indicator (live activity while the model streams) ────────────
-export function GeneratingLine({ tokens, elapsed, tps }: { tokens: number; elapsed: number; tps: number }) {
+// ─── Generating indicator (the single live activity line while streaming) ─────
+export function GeneratingLine({ tokens, elapsed }: { tokens: number; elapsed: number }) {
+  // Live tok/s derived from the ticking counters, so it updates in real time
+  // instead of only at the end of the turn.
+  const liveTps = elapsed > 0 ? Math.round(tokens / elapsed) : 0;
   return (
     <Box>
       <Text color={theme.color.warn}><Spinner type="dots" /> generating </Text>
       <Text color={theme.color.success}>↓{tokens.toLocaleString()} tok</Text>
       <Text color={theme.color.dim}> · {elapsed}s</Text>
-      {tps ? <Text color={theme.color.dim}> · {Math.round(tps)} t/s</Text> : null}
+      {liveTps ? <Text color={theme.color.dim}> · {liveTps} t/s</Text> : null}
       <Text color={theme.color.dim}>   ·  esc to stop</Text>
     </Box>
   );

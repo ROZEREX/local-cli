@@ -6,7 +6,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { getConfig, saveConfig } from "../config";
 import { systemPrompt, type Mode } from "../prompt";
 import { chat, resetClient, estimateTokens, summarizeConversation, compactHistory, warmUp } from "../llm";
-import { listOllamaModelsDetailed, modelHint } from "../ollama";
+import { listOllamaModelsDetailed, modelHint, modelInfo } from "../ollama";
 import { buildDiffView, type DiffView } from "../diff";
 import { ThinkSplitter } from "../think";
 import { isCommand, runCommand, commandList, type CommandContext } from "../commands";
@@ -163,6 +163,7 @@ export function App({ autoResume = false }: AppProps) {
   const [model, setModel] = useState(cfg.model);
   const [cwd, setCwd] = useState(cfg.cwd);
   const [tokens, setTokens] = useState(0);
+  const [contextWindow, setContextWindow] = useState(cfg.contextWindow); // adapts per model
   const [usage, setUsage] = useState({ inTok: 0, outTok: 0, tps: 0 }); // session totals + last speed
   const [liveOut, setLiveOut] = useState(0);  // live output tokens for the in-flight turn
   const [elapsed, setElapsed] = useState(0);  // seconds the current turn has been running
@@ -185,6 +186,28 @@ export function App({ autoResume = false }: AppProps) {
   const nextId = () => ++idRef.current;
   const commit = (item: ItemInput) => setCommitted(c => [...c, { ...item, id: nextId() } as Item]);
   const recomputeTokens = () => setTokens(estimateTokens(historyRef.current));
+
+  // Keep the context window in step with the selected model's NATIVE limit.
+  // On a model switch we set it to the model's native length; on startup we only
+  // clamp DOWN if the saved value exceeds what the model actually supports (so a
+  // 131k setting left over from another model doesn't give a wrong % or over-ask
+  // num_ctx). A user's smaller custom value is respected.
+  const syncContextForModel = async (m: string, opts: { force: boolean }) => {
+    try {
+      const info = await modelInfo(getConfig().baseUrl, m);
+      const native = info?.contextLength;
+      if (!native) return;
+      const current = getConfig().contextWindow;
+      const next = opts.force ? native : Math.min(current, native);
+      if (next !== current) {
+        saveConfig({ contextWindow: next });
+        setContextWindow(next);
+        if (opts.force) commit({ kind: "system", text: `Context window set to ${next.toLocaleString()} tokens for ${m} (its native limit).` });
+      } else {
+        setContextWindow(current);
+      }
+    } catch { /* model info unavailable — keep the current setting */ }
+  };
 
   const flushActive = () => {
     if (thinkingRef.current.trim()) commit({ kind: "thinking", text: thinkingRef.current.trim() });
@@ -501,9 +524,10 @@ export function App({ autoResume = false }: AppProps) {
     if (!value) return;
 
     if (isCommand(value)) {
+      const prevModel = getConfig().model;
       await runCommand(value, buildCtx());
       const c = getConfig();
-      setModel(c.model);
+      if (c.model !== prevModel) { setModel(c.model); void syncContextForModel(c.model, { force: true }); }
       setCwd(c.cwd);
       return;
     }
@@ -520,6 +544,7 @@ export function App({ autoResume = false }: AppProps) {
   useEffect(() => {
     if (autoResume) resume();
     void warmUp();
+    void syncContextForModel(getConfig().model, { force: false });
     // Best-effort: don't leave background servers running if the process dies.
     const cleanup = () => stopAllServers();
     process.on("exit", cleanup);
@@ -559,14 +584,10 @@ export function App({ autoResume = false }: AppProps) {
       <Box flexDirection="column" marginTop={1}>
         <StatusBar
           model={model}
-          cwd={cwd}
           tokens={tokens}
-          contextWindow={getConfig().contextWindow}
+          contextWindow={contextWindow}
           status={statusForBar}
           mode={mode}
-          readTok={usage.inTok}
-          writeTok={usage.outTok}
-          tps={usage.tps}
         />
         {overlay?.kind === "permission" ? (
           <PermissionPrompt name={overlay.tool} detail={overlay.detail} diff={overlay.diff} onDecide={decidePermission} />
@@ -580,7 +601,7 @@ export function App({ autoResume = false }: AppProps) {
               const cur = m === model ? "● current" : "";
               return { label: m, value: m, hint: [cur, spec].filter(Boolean).join("   ") };
             })}
-            onSelect={(m) => { saveConfig({ model: m }); resetClient(); setModel(m); setOverlay(null); commit({ kind: "system", text: `Model set to ${m}` }); }}
+            onSelect={(m) => { saveConfig({ model: m }); resetClient(); setModel(m); setOverlay(null); commit({ kind: "system", text: `Model set to ${m}` }); void syncContextForModel(m, { force: true }); }}
             onCancel={() => setOverlay(null)}
           />
         ) : overlay?.kind === "chats" ? (
@@ -621,7 +642,7 @@ export function App({ autoResume = false }: AppProps) {
             commands={commandList()}
           />
         ) : (
-          <GeneratingLine tokens={liveOut} elapsed={elapsed} tps={usage.tps} />
+          <GeneratingLine tokens={liveOut} elapsed={elapsed} />
         )}
       </Box>
     </Box>
