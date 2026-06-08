@@ -461,7 +461,12 @@ export function App({ autoResume = false }: AppProps) {
 
   const decidePermission = (d: "yes" | "no" | "always") => {
     if (overlay?.kind !== "permission") return;
-    if (d === "always") sessionAllowRef.current.add(overlay.tool);
+    if (d === "always") {
+      sessionAllowRef.current.add(overlay.tool);
+      // Persist so it sticks across restarts (and the web UI honors it too).
+      const cur = getConfig().alwaysAllow ?? [];
+      if (!cur.includes(overlay.tool)) saveConfig({ alwaysAllow: [...cur, overlay.tool] });
+    }
     overlay.resolve(d !== "no");
     setOverlay(null);
   };

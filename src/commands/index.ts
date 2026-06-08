@@ -221,6 +221,23 @@ const commands: SlashCommand[] = [
     },
   },
   {
+    name: "allow",
+    description: "Always-allow a tool (no more prompts):  /allow bash  ·  /allow clear  ·  /allow (list)",
+    run: (args, ctx) => {
+      const cfg = getConfig();
+      const cur = cfg.alwaysAllow ?? [];
+      if (args.length === 0) {
+        ctx.print(cur.length ? `Always-allowed tools (no prompt): ${cur.join(", ")}\nAdd with /allow <tool>, clear with /allow clear.` : "No tools are always-allowed yet. /allow bash to stop being asked about bash.");
+        return;
+      }
+      if (args[0] === "clear") { saveConfig({ alwaysAllow: [] }); ctx.print("Cleared the always-allow list — mutating tools will prompt again."); return; }
+      const tool = args[0]!;
+      if (cur.includes(tool)) { ctx.print(`${tool} is already always-allowed.`); return; }
+      saveConfig({ alwaysAllow: [...cur, tool] });
+      ctx.print(`${tool} is now always-allowed — I won't ask before running it. (/allow clear to undo.)`);
+    },
+  },
+  {
     name: "think",
     description: "Toggle showing the model's reasoning:  /think on|off",
     run: (args, ctx) => {
@@ -313,6 +330,7 @@ const commands: SlashCommand[] = [
             `  contextWindow: ${cfg.contextWindow}`,
             `  autoCompact:   ${cfg.autoCompact}`,
             `  loopGuard:     ${cfg.loopGuard}  (auto-stop runaway repeat loops; off by default)`,
+            `  alwaysAllow:   ${(cfg.alwaysAllow ?? []).join(", ") || "(none)"}  (tools that never prompt; manage with /allow)`,
             `  cwd:           ${cfg.cwd}`,
             "",
             "Set with: /config <key> <value>",

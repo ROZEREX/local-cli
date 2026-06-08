@@ -239,7 +239,14 @@ const handlers: any = {
       const cfg = getConfig();
       switch (m.t) {
         case "chat": if (typeof m.text === "string" && m.text.trim()) void runChat(ws, m.text.trim()); break;
-        case "permission": { const r = ws.data.pending.get(m.id); if (r) { ws.data.pending.delete(m.id); r(!!m.approved); } break; }
+        case "permission": {
+          if (m.approved && m.always && m.tool) {
+            const cur = getConfig().alwaysAllow ?? [];
+            if (!cur.includes(m.tool)) { saveConfig({ alwaysAllow: [...cur, m.tool] }); send(ws, { t: "notice", v: `${m.tool} is now always allowed — I won't ask again. (Manage with /config or reset in settings.)` }); }
+          }
+          const r = ws.data.pending.get(m.id); if (r) { ws.data.pending.delete(m.id); r(!!m.approved); }
+          break;
+        }
         case "choice": { const r = ws.data.pending.get(m.id); if (r) { ws.data.pending.delete(m.id); r(String(m.answer ?? "")); } break; }
         case "interrupt": ws.data.abort?.abort(); break;
         case "new": newChat(ws); break;

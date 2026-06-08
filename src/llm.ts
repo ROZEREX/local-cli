@@ -321,11 +321,15 @@ async function runTool(
     return r;
   }
   if (MUTATING_TOOLS.has(name) && !options.autoAccept && callbacks.requestPermission) {
-    const approved = await callbacks.requestPermission(name, args);
-    if (!approved) {
-      const r = "Tool call denied by user.";
-      callbacks.onToolResult(name, r);
-      return r;
+    // Skip the prompt for tools the user permanently allowed (Always allow / 'a').
+    const persisted = getConfig().alwaysAllow ?? [];
+    if (!persisted.includes(name)) {
+      const approved = await callbacks.requestPermission(name, args);
+      if (!approved) {
+        const r = "Tool call denied by user.";
+        callbacks.onToolResult(name, r);
+        return r;
+      }
     }
   }
   let result: string;

@@ -27,6 +27,9 @@ export interface Config {
   // Persisted interaction mode. "auto" = the agent runs mutating tools without
   // asking (autonomous); "plan" = research-only; "normal" = prompt per action.
   mode: "normal" | "plan" | "auto";
+  // Tools the user has permanently allowed (via "Always allow" / the CLI's 'a').
+  // These never prompt again, even in normal mode. e.g. ["bash"].
+  alwaysAllow: string[];
   // Auto-stop a response when the model is stuck repeating itself. Off by default
   // — maxTokens already caps a runaway, and esc interrupts manually. Opt in if a
   // model loops badly for you.
@@ -58,6 +61,7 @@ const DEFAULTS: Config = {
   activeProfile: "",
   loopGuard: false,
   mode: "normal",
+  alwaysAllow: [],
 };
 
 let _config: Config | null = null;
