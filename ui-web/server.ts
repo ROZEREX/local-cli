@@ -25,7 +25,7 @@ import { listServers, serverLogs, stopServer } from "../src/proc";
 import { listListeningPorts, killPort } from "../src/ports";
 import { systemInfo, recommendModels } from "../src/sysinfo";
 import { listDirEntries, expandSelection, readFilesAsContext } from "../src/files";
-import { browserOpen, browserScreenshot, browserReadText, browserClose } from "../src/browser";
+import { browserOpen, browserReadText, browserClose } from "../src/browser";
 
 const PUBLIC = join(import.meta.dir, "public");
 const PORT = Number(process.env.PORT ?? 4317);
@@ -300,8 +300,8 @@ const handlers: any = {
         }
         case "stop_server": { stopServer(String(m.id)); send(ws, { t: "servers", list: serverList() }); break; }
         case "servers": send(ws, { t: "servers", list: serverList() }); break;
-        case "browser_open": { try { const r = await browserOpen(String(m.url)); const img = await browserScreenshot(); send(ws, { t: "browser_state", url: r.url, title: r.title, image: img }); } catch (e: any) { send(ws, { t: "browser_state", error: e.message }); } break; }
-        case "browser_shot": { try { const img = await browserScreenshot(); const text = await browserReadText().catch(() => ""); send(ws, { t: "browser_state", image: img, text }); } catch (e: any) { send(ws, { t: "browser_state", error: e.message }); } break; }
+        case "browser_open": { try { const r = await browserOpen(String(m.url)); const text = await browserReadText().catch(() => ""); send(ws, { t: "browser_state", url: r.url, title: r.title, text }); } catch (e: any) { send(ws, { t: "browser_state", error: e.message }); } break; }
+        case "browser_shot": { try { const text = await browserReadText().catch(() => ""); send(ws, { t: "browser_state", text, refreshed: true }); } catch (e: any) { send(ws, { t: "browser_state", error: e.message }); } break; }
         case "browser_close": { await browserClose().catch(() => {}); send(ws, { t: "browser_state", closed: true }); break; }
         case "kill_port": { const r = killPort(Number(m.port)); send(ws, { t: "notice", v: r.ok ? `Freed port ${r.port} (killed ${r.killed.map(k => "PID " + k.pid).join(", ")}).` : `Nothing was listening on port ${m.port}.` }); send(ws, { t: "ports", list: listListeningPorts() }); break; }
         case "ports": send(ws, { t: "ports", list: listListeningPorts() }); break;
