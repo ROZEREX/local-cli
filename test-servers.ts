@@ -36,6 +36,11 @@ const run = async () => {
   const id = servers[0]!.id;
   check("server is in running state", servers[0]!.status === "running");
 
+  // run_server with the SAME command must NOT start a duplicate.
+  r = await executeTool("run_server", { command: longCmd, wait: 100 });
+  check("re-running the same command reuses the existing server", r.includes("ALREADY running") && r.includes(id), r);
+  check("no duplicate process was spawned", listServers().length === 1, `len=${listServers().length}`);
+
   // server_logs returns the output we saw.
   r = await executeTool("server_logs", { id });
   check("server_logs returns startup output", r.includes("listening on"), r);

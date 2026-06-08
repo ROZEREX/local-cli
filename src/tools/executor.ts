@@ -298,6 +298,15 @@ export function deleteFile(args: { path: string }): string {
 // ─── run_server (long-running background process) ─────────────────────────────
 export async function runServer(args: { command: string; cwd?: string; wait?: number }): Promise<string> {
   if (!args.command) return "Error: command is required (e.g. 'npm run dev').";
+  // Don't start a DUPLICATE: if the same command is already running here, reuse it
+  // (otherwise repeated "let me start the server" calls pile up processes that all
+  // fight for the same port).
+  const dir = args.cwd ? resolve(getConfig().cwd, args.cwd) : getConfig().cwd;
+  const existing = listServers().find(p => p.status === "running" && p.command.trim() === args.command.trim() && p.cwd === dir);
+  if (existing) {
+    const recent = serverLogs(existing.id, 20).join("\n");
+    return `That server is ALREADY running as [${existing.id}]${existing.url ? ` at ${existing.url}` : ""} — not starting a duplicate.\nCommand: ${existing.command}\nRecent output:\n${recent || "(none)"}\n\nUse server_logs id="${existing.id}" to read more, or stop_server id="${existing.id}" to stop it. Do not call run_server again for this — it's up.`;
+  }
   const proc = startServer(args.command, args.cwd);
   // Give it a moment to boot so we can return startup output / an early crash.
   const waitMs = Math.min(Math.max(args.wait ?? 2500, 0), 15000);
