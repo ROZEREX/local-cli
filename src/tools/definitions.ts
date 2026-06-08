@@ -217,6 +217,54 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "browser_open",
+      description: "Open a URL in a real browser the agent controls (launches Chrome/Edge if needed). Use this to open and TEST a web app you built or started with run_server, e.g. http://localhost:3000.",
+      parameters: { type: "object", properties: { url: { type: "string", description: "URL to open" } }, required: ["url"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_read",
+      description: "Read the visible text of the current browser page, plus any console errors. Use this to verify a page rendered or to read error messages.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_click",
+      description: "Click an element in the current browser page by CSS selector or visible text (e.g. a button or link), to interact with the app.",
+      parameters: { type: "object", properties: { target: { type: "string", description: "CSS selector or visible text of the element to click" } }, required: ["target"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_screenshot",
+      description: "Take a screenshot of the current browser page and have a vision model describe it — so you can SEE whether the UI looks right or is broken. Optionally pass a specific question.",
+      parameters: { type: "object", properties: { question: { type: "string", description: "What to look for (optional)" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_close",
+      description: "Close the browser the agent is controlling.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "screenshot",
+      description: "Capture the user's screen and have a vision model analyze it — use when the user asks you to look at what they're doing or what's on their screen. Requires a vision-capable model.",
+      parameters: { type: "object", properties: { question: { type: "string", description: "What to look at / analyze (optional)" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_profile",
       description: "Read the user's saved coding profile — their cross-project style and conventions (stack, naming, structure, practices). Use it to recall how they like things built.",
       parameters: {

@@ -62,6 +62,10 @@ function summarize(name: string, argsJson: string): string {
     case "ask_user": return a.question ?? "";
     case "list_ports": return "";
     case "kill_port": return a.port ? `:${a.port}` : "";
+    case "browser_open": return a.url ?? "";
+    case "browser_click": return a.target ?? a.selector ?? a.text ?? "";
+    case "browser_screenshot": case "screenshot": return a.question ?? "";
+    case "browser_read": case "browser_close": return "";
     default: return argsJson;
   }
 }
@@ -75,6 +79,9 @@ function permDetail(name: string, args: any): string {
   if (name === "stop_server") return `stop server ${args.id ?? "(latest)"}`;
   if (name === "update_profile") return `save to coding profile${args.name ? ` "${args.name}"` : ""}:\n${(args.content ?? "").slice(0, 200)}`;
   if (name === "kill_port") return `kill whatever is listening on port ${args.port}`;
+  if (name === "browser_open") return `open ${args.url} in a controlled browser`;
+  if (name === "browser_click") return `click "${args.target ?? args.selector ?? args.text}" in the browser`;
+  if (name === "screenshot") return `capture your screen and analyze it with the vision model`;
   return JSON.stringify(args);
 }
 

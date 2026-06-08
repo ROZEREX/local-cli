@@ -66,6 +66,10 @@ function summarize(name: string, argsJson: string): string {
     case "server_logs": case "stop_server": return a.id ?? "(latest)";
     case "update_profile": case "read_profile": return a.name ?? "coding profile";
     case "ask_user": return a.question ?? "";
+    case "kill_port": return a.port ? ":" + a.port : "";
+    case "browser_open": return a.url ?? "";
+    case "browser_click": return a.target ?? a.selector ?? a.text ?? "";
+    case "browser_screenshot": case "screenshot": return a.question ?? "";
     default: return "";
   }
 }

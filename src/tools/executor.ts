@@ -5,6 +5,8 @@ import { spawnSync } from "child_process";
 import { getConfig } from "../config";
 import { startServer, serverLogs, stopServer, listServers, getServer, waitForStartup } from "../proc";
 import { listListeningPorts, killPort } from "../ports";
+import { browserOpen, browserReadText, browserClick, browserScreenshot, browserConsole, browserClose } from "../browser";
+import { captureDesktop, analyzeImage } from "../vision";
 import {
   readActiveProfile, getActiveProfileName, readProfileByName, writeProfileByName,
   setActiveProfile, listProfileNames,
@@ -387,6 +389,46 @@ export function killPortTool(args: { port?: number | string }): string {
   return `Freed port ${port} — killed ${r.killed.map(k => `PID ${k.pid}${k.process ? " (" + k.process + ")" : ""}`).join(", ")}.`;
 }
 
+// ─── browser control (CDP) ────────────────────────────────────────────────────
+export async function browserOpenTool(args: { url?: string }): Promise<string> {
+  if (!args.url) return "Error: a url is required (e.g. browser_open url=\"http://localhost:3000\").";
+  try {
+    const r = await browserOpen(args.url);
+    return `Opened ${r.url}${r.title ? ` — "${r.title}"` : ""} in the browser. Use browser_read to see the page text, browser_screenshot to look at it, browser_click to interact.`;
+  } catch (e: any) { return `Error opening browser: ${e.message}`; }
+}
+export async function browserReadTool(): Promise<string> {
+  try {
+    const text = await browserReadText();
+    const errs = await browserConsole().catch(() => "");
+    return `Page text:\n${text || "(empty)"}${errs ? `\n\nConsole errors:\n${errs}` : ""}`;
+  } catch (e: any) { return `Error reading page: ${e.message}`; }
+}
+export async function browserClickTool(args: { target?: string; selector?: string; text?: string }): Promise<string> {
+  const target = args.target || args.selector || args.text;
+  if (!target) return "Error: provide a CSS selector or visible text to click (target).";
+  try { return await browserClick(target); } catch (e: any) { return `Error clicking: ${e.message}`; }
+}
+export async function browserScreenshotTool(args: { question?: string }): Promise<string> {
+  try {
+    const b64 = await browserScreenshot();
+    const analysis = await analyzeImage(b64, args.question || "Describe this web page and point out any layout problems, errors, or broken elements.");
+    return `Looked at the page (screenshot ${Math.round(b64.length * 0.75 / 1024)} KB).\n\n${analysis}`;
+  } catch (e: any) { return `Error taking browser screenshot: ${e.message}`; }
+}
+export async function browserCloseTool(): Promise<string> {
+  try { await browserClose(); return "Closed the controlled browser."; } catch (e: any) { return `Error closing browser: ${e.message}`; }
+}
+
+// ─── screenshot (desktop) + vision analysis ───────────────────────────────────
+export async function screenshotTool(args: { question?: string }): Promise<string> {
+  try {
+    const b64 = captureDesktop();
+    const analysis = await analyzeImage(b64, args.question || "Describe what is on the screen right now. Note what app/window is focused and anything notable.");
+    return `Captured the screen.\n\n${analysis}`;
+  } catch (e: any) { return `Error: ${e.message}`; }
+}
+
 // Normalize common arg-name variations models emit, so a slightly-off tool call
 // still works (covers native tool calls too, not just the prompted parser).
 function normalizeArgs(args: any): any {
@@ -407,6 +449,7 @@ function normalizeArgs(args: any): any {
   }
   if (!args.command && args.cmd) args.command = args.cmd;
   if (args.port == null) { for (const a of ["portNumber", "port_number", "p"]) if (args[a] != null) { args.port = args[a]; break; } }
+  if (!args.url) { for (const a of ["address", "link", "href", "uri"]) if (args[a]) { args.url = args[a]; break; } }
   return args;
 }
 
@@ -463,6 +506,12 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "update_profile": return updateProfileTool(args);
     case "list_ports": return listPortsTool();
     case "kill_port": return killPortTool(args);
+    case "browser_open": return await browserOpenTool(args);
+    case "browser_read": return await browserReadTool();
+    case "browser_click": return await browserClickTool(args);
+    case "browser_screenshot": return await browserScreenshotTool(args);
+    case "browser_close": return await browserCloseTool();
+    case "screenshot": return await screenshotTool(args);
     default: return `Error: Unknown tool: ${name}`;
   }
 }

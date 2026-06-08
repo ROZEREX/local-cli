@@ -68,6 +68,12 @@ export const toolIcon: Record<string, string> = {
   ask_user: "?",
   list_ports: "⊞",
   kill_port: "⏻",
+  browser_open: "◍",
+  browser_read: "◉",
+  browser_click: "☞",
+  browser_screenshot: "▦",
+  browser_close: "◌",
+  screenshot: "▦",
 };
 
 // Accent color per tool, for the card's left border.
@@ -89,4 +95,10 @@ export const toolColor: Record<string, string> = {
   ask_user: theme.color.warn,
   list_ports: theme.color.accent,
   kill_port: theme.color.error,
+  browser_open: theme.color.primary,
+  browser_read: theme.color.accent,
+  browser_click: theme.color.primary,
+  browser_screenshot: theme.color.accent,
+  browser_close: theme.color.dim,
+  screenshot: theme.color.accent,
 };

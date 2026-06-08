@@ -227,6 +227,16 @@ is genuinely yours to make — which package manager (when several are installed
 framework, language, overwrite vs merge — instead of guessing or making you set it
 manually. It only asks when it can't infer the answer itself.
 
+**Browser & vision** (test what it builds, and *see*):
+`browser_open` drives a real Chrome/Edge (via the DevTools Protocol — no extra
+install) to open a web app; `browser_read` reads the page text + console errors;
+`browser_click` interacts; `browser_screenshot` captures the page and a
+vision-capable model **describes/debugs the rendered UI**. `screenshot` captures
+your desktop for analysis when you ask it to look at what you're doing. Vision
+tools need a vision-capable model (e.g. gemma3/4 vision, llava, qwen2.5-vl).
+
+**Ports:** `list_ports` / `kill_port` free a stuck port so a dev server can bind.
+
 **Memory:** `read_profile` / `update_profile` let the agent recall and persist
 your cross-project coding conventions on its own (see *Coding profiles* below).
 
@@ -299,6 +309,9 @@ src/
   config.ts           persisted settings (~/.local-cli/config.json)
   profile.ts          named coding profiles + package-manager detection
   proc.ts             background server/process registry (run_server et al.)
+  ports.ts            list/free TCP ports (list_ports / kill_port)
+  browser.ts          browser control via the Chrome DevTools Protocol
+  vision.ts           screen capture + image analysis through a vision model
   prompt.ts           dynamic system prompt (mode, profile, context, tool docs)
   llm.ts              streaming loop: native + prompted tool-calling, compaction
   ollama.ts           list installed models, detect native tool support
