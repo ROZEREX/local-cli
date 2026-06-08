@@ -26,7 +26,7 @@ import { listListeningPorts, killPort } from "../src/ports";
 import { systemInfo, recommendModels } from "../src/sysinfo";
 import { listDirEntries, expandSelection, readFilesAsContext } from "../src/files";
 import { browserOpen, browserReadText, browserClose } from "../src/browser";
-import { setExtension, resolveCommand } from "../src/extbridge";
+import { setExtension, resolveCommand, extensionConnected } from "../src/extbridge";
 
 const PUBLIC = join(import.meta.dir, "public");
 const PORT = Number(process.env.PORT ?? 4317);
@@ -55,8 +55,13 @@ function configPayload() {
     thinking: cfg.thinking !== false, packageManager: cfg.packageManager,
     activeProfile: getActiveProfileName(), profiles: listProfileNames(),
     availablePM: availablePackageManagers(), mode: cfg.mode ?? "normal",
+    extConnected: extensionConnected(),
   };
 }
+
+// Track web-UI sockets so we can tell them when the browser extension connects.
+const uiClients = new Set<ServerWebSocket<WSData>>();
+function broadcastConfig() { const p = { t: "config", config: configPayload() }; for (const c of uiClients) { try { c.send(JSON.stringify(p)); } catch {} } }
 
 function summarize(name: string, argsJson: string): string {
   let a: any = {};
@@ -217,8 +222,10 @@ const handlers: any = {
         setExtension((obj) => { try { ws.send(JSON.stringify(obj)); } catch {} });
         send(ws, { t: "ready", config: configPayload(), ext: true });
         send(ws, { t: "mode", mode: ws.data.mode });
+        broadcastConfig(); // tell the web UI the extension is now live
         return;
       }
+      uiClients.add(ws);
       send(ws, { t: "ready", config: configPayload() });
       send(ws, { t: "mode", mode: ws.data.mode });
       send(ws, { t: "sessions", list: listSessions(getConfig().cwd), active: ws.data.sessionId });
@@ -318,7 +325,7 @@ const handlers: any = {
         case "ports": send(ws, { t: "ports", list: listListeningPorts() }); break;
       }
     },
-    close(ws: ServerWebSocket<WSData>) { if (ws.data.kind === "ext") setExtension(null); ws.data.abort?.abort(); ws.data.pending.clear(); },
+    close(ws: ServerWebSocket<WSData>) { if (ws.data.kind === "ext") { setExtension(null); broadcastConfig(); } else { uiClients.delete(ws); } ws.data.abort?.abort(); ws.data.pending.clear(); },
   },
 };
 

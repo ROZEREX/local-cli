@@ -265,6 +265,22 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "page_open",
+      description: "Open a URL in a NEW browser tab through the extension and switch to it. Use this to start a web task the user asked for (e.g. open a marketplace), then page_read/page_click to work on it.",
+      parameters: { type: "object", properties: { url: { type: "string", description: "URL to open" } }, required: ["url"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "page_navigate",
+      description: "Navigate the current extension tab to a different URL.",
+      parameters: { type: "object", properties: { url: { type: "string", description: "URL to go to" } }, required: ["url"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "page_read",
       description: "Read the page the user is currently looking at, through the browser extension (their live tab). Returns the visible text plus a list of clickable elements. Use this to understand a real site the user wants you to work with (e.g. a marketplace).",
       parameters: { type: "object", properties: {}, required: [] },

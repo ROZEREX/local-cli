@@ -472,6 +472,22 @@ export async function pageScrollTool(args: { to?: string }): Promise<string> {
   try { await sendCommand("scroll", { to: args.to || "down" }); return `Scrolled ${args.to || "down"}.`; }
   catch (e: any) { return `Error: ${e.message}`; }
 }
+export async function pageOpenTool(args: { url?: string }): Promise<string> {
+  if (!extensionConnected()) return NO_EXT;
+  if (!args.url) return "Error: a url is required.";
+  try {
+    const r = await sendCommand("open_tab", { url: args.url });
+    return r.ok ? `Opened ${r.url} in a new browser tab. Use page_read to see it, then page_click/page_find to act on it.` : `Couldn't open the tab: ${r.error || "unknown"}`;
+  } catch (e: any) { return `Error: ${e.message}`; }
+}
+export async function pageNavigateTool(args: { url?: string }): Promise<string> {
+  if (!extensionConnected()) return NO_EXT;
+  if (!args.url) return "Error: a url is required.";
+  try {
+    const r = await sendCommand("navigate", { url: args.url });
+    return r.ok ? `Navigated the current tab to ${r.url}.` : `Couldn't navigate: ${r.error || "no active tab — use page_open first"}`;
+  } catch (e: any) { return `Error: ${e.message}`; }
+}
 
 // ─── system_info (hardware eval + model recommendations) ──────────────────────
 export function systemInfoTool(): string {
@@ -568,6 +584,8 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "page_click": return await pageClickTool(args);
     case "page_highlight": return await pageHighlightTool(args);
     case "page_scroll": return await pageScrollTool(args);
+    case "page_open": return await pageOpenTool(args);
+    case "page_navigate": return await pageNavigateTool(args);
     default: return `Error: Unknown tool: ${name}`;
   }
 }

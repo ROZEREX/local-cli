@@ -72,8 +72,8 @@ if (!window.__localcliInjected) {
 
   function onServer(m) {
     switch (m.t) {
-      case "ready": dot.classList.add("on"); if (msgs.children.length === 1) msgs.innerHTML = ""; break;
-      case "ext_status": dot.classList.toggle("on", m.connected); break;
+      case "ready": markConnected(true); break;
+      case "ext_status": markConnected(m.connected); break;
       case "text": { if (!curAsst) curAsst = addMsg("asst", ""); curAsst._raw = (curAsst._raw || "") + m.v; curAsst.textContent = stripThink(curAsst._raw).trim(); msgs.scrollTop = msgs.scrollHeight; break; }
       case "tool_call": curAsst = null; addMsg("tool", "⚙ " + m.name + (m.summary ? " " + m.summary : "")); break;
       case "tool_result": break;
@@ -87,6 +87,16 @@ if (!window.__localcliInjected) {
     if (m.t === "toggle_panel") { const open = panel.classList.toggle("open"); $("launch").style.display = open ? "none" : "grid"; return; }
     onServer(m);
   });
+
+  function markConnected(on) {
+    dot.classList.toggle("on", on);
+    if (on && msgs.children.length === 1 && msgs.firstChild.classList.contains("note")) msgs.innerHTML = "";
+  }
+  // Announce this tab so the background knows where to route server messages, and
+  // learn the current connection status right away (don't wait for a chat).
+  function register() { chrome.runtime.sendMessage({ t: "register" }, (resp) => { if (chrome.runtime.lastError) return; markConnected(!!(resp && resp.connected)); }); }
+  register();
+  setInterval(register, 4000); // keep status fresh / survive worker restarts
 
   function submit() {
     const text = inp.value.trim(); if (!text || busy) return;

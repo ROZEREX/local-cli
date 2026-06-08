@@ -28,6 +28,7 @@ export const TOOL_NAMES = [
   "read_profile", "update_profile", "ask_user", "list_ports", "kill_port",
   "browser_open", "browser_read", "browser_click", "browser_screenshot", "browser_close", "screenshot",
   "system_info", "page_read", "page_find", "page_click", "page_highlight", "page_scroll",
+  "page_open", "page_navigate",
 ];
 
 function stripEdgeNewlines(s: string): string {

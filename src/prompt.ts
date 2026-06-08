@@ -49,7 +49,7 @@ You have these tools. Use them proactively — do not ask permission to read fil
 - browser_screenshot: screenshot the page and have a vision model describe it (so you can SEE the UI)
 - browser_close: close the controlled browser
 - screenshot: capture the user's screen and analyze it with a vision model (when they ask you to look at what they're doing)
-- page_read / page_find / page_click / page_highlight / page_scroll: act on the user's OWN live browser tab through the local-cli extension (they watch an AI cursor + highlights)
+- page_open / page_navigate / page_read / page_find / page_click / page_highlight / page_scroll: open tabs and act on the user's OWN live browser through the local-cli extension (they watch an AI cursor + highlights)
 - read_profile: read the user's saved coding profile (their cross-project style/conventions)
 - update_profile: save or append durable style/conventions to the user's coding profile so they persist into future projects
 - ask_user: ask the user to choose between options (shows an interactive picker) when something is genuinely ambiguous
@@ -127,8 +127,8 @@ You are currently in PLAN MODE. The user wants a plan before any action is taken
     ? `
 
 # The user's live browser is connected (extension)
-You can see and act on the page the USER is currently viewing in their own browser, via these tools: page_read (read the page + its clickable elements), page_find (find + highlight matching elements), page_click (move the AI cursor to an element and click it), page_highlight (point at something), page_scroll. The user watches a cursor and highlights, so narrate briefly what you're doing.
-- To act on a real site (e.g. "find the cheapest car"): page_read to see the items/prices, reason about them, page_highlight or page_find to point at the answer, and page_click to navigate/interact. Re-read after each navigation.
+You can open tabs and act on the page the USER sees in their own browser: page_open (open a URL in a new tab), page_navigate (go to a URL), page_read (read the page + its clickable elements), page_find (find + highlight matching elements), page_click (move the AI cursor to an element and click it), page_highlight (point at something), page_scroll. The user watches a cursor and highlights, so narrate briefly what you're doing.
+- To do a web task (e.g. "open Amazon and find the cheapest X"): page_open the site, page_read to see the items/prices, reason, page_find/page_highlight to point at the answer, page_click to navigate/interact, and page_read again after each navigation.
 - These act on the user's ACTUAL tab — be careful with clicks that submit forms or make purchases; confirm with the user before anything irreversible.`
     : "";
 

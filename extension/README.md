@@ -7,16 +7,27 @@ cursor and highlights, so you watch it work. Ask it "find the cheapest item",
 
 It connects to the same `bun run web` server as the web UI (no separate backend).
 
-## Install (load unpacked — takes 30s)
+## Install (one-time, ~30s)
+
+Chrome won't let an **unpublished** extension install with a single click — that
+requires the Chrome Web Store (a paid dev account + review). So for now it's
+"load unpacked", which you do once:
 
 1. Start the server: **`bun run web`** (from the project root).
 2. Open **chrome://extensions** (or edge://extensions).
-3. Turn on **Developer mode** (top-right).
-4. Click **Load unpacked** and select this `extension/` folder.
-5. Open any web page. A **◆ bubble** appears bottom-right — click it for the chat.
-   (Or click the extension's toolbar icon to toggle it.)
+3. Turn on **Developer mode** (top-right toggle).
+4. Click **Load unpacked** → select this `extension/` folder.
 
-The dot in the panel header is green when it's connected to the server.
+That's it — it stays installed. The dot in the panel header (and the **live
+browser** badge in the web UI header) turns green when it's connected.
+
+## Two ways to use it
+- **From the main web chat** (`http://localhost:4317`): once the badge says *live
+  browser*, just ask — "open amazon.com and find the cheapest mechanical
+  keyboard". The agent uses **page_open** to open a tab and acts on it; you watch
+  the AI cursor + highlights.
+- **From the floating panel** on any page: click the **◆ bubble** (bottom-right) or
+  the toolbar icon, and chat right there about the page you're on.
 
 ## What it can do on the page
 - **page_read** — read the visible text + clickable elements (so the agent
