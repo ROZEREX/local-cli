@@ -94,9 +94,13 @@ if (!window.__localcliInjected) {
   }
   // Announce this tab so the background knows where to route server messages, and
   // learn the current connection status right away (don't wait for a chat).
-  function register() { chrome.runtime.sendMessage({ t: "register" }, (resp) => { if (chrome.runtime.lastError) return; markConnected(!!(resp && resp.connected)); }); }
+  function register() { try { chrome.runtime.sendMessage({ t: "register" }, (resp) => { if (chrome.runtime.lastError) return; markConnected(!!(resp && resp.connected)); }); } catch {} }
+  // A long-lived port keeps the MV3 service worker (and its WebSocket) alive while
+  // this page is open; reconnect it if the worker recycles.
+  function keepalive() { try { const p = chrome.runtime.connect({ name: "keepalive" }); p.onDisconnect.addListener(() => setTimeout(keepalive, 1000)); } catch { setTimeout(keepalive, 2000); } }
+  keepalive();
   register();
-  setInterval(register, 4000); // keep status fresh / survive worker restarts
+  setInterval(register, 3000); // refresh status / nudge reconnect
 
   function submit() {
     const text = inp.value.trim(); if (!text || busy) return;
