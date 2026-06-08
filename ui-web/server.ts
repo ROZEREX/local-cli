@@ -160,11 +160,8 @@ function newChat(ws: ServerWebSocket<WSData>) {
   pushContext(ws);
 }
 
-let server: import("bun").Server<WSData>;
-try {
-server = Bun.serve<WSData>({
-  port: PORT,
-  async fetch(req, server) {
+const handlers: any = {
+  async fetch(req: Request, server: any) {
     const url = new URL(req.url);
 
     if (url.pathname === "/ws") {
@@ -212,14 +209,14 @@ server = Bun.serve<WSData>({
   },
 
   websocket: {
-    async open(ws) {
+    async open(ws: ServerWebSocket<WSData>) {
       send(ws, { t: "ready", config: configPayload() });
       send(ws, { t: "mode", mode: ws.data.mode });
       send(ws, { t: "sessions", list: listSessions(getConfig().cwd), active: ws.data.sessionId });
       pushContext(ws);
       void warmUp();
     },
-    async message(ws, raw) {
+    async message(ws: ServerWebSocket<WSData>, raw: string | Buffer) {
       let m: any; try { m = JSON.parse(String(raw)); } catch { return; }
       const cfg = getConfig();
       switch (m.t) {
@@ -310,19 +307,36 @@ server = Bun.serve<WSData>({
         case "ports": send(ws, { t: "ports", list: listListeningPorts() }); break;
       }
     },
-    close(ws) { ws.data.abort?.abort(); ws.data.pending.clear(); },
+    close(ws: ServerWebSocket<WSData>) { ws.data.abort?.abort(); ws.data.pending.clear(); },
   },
-});
-} catch (e: any) {
-  if (String(e?.message ?? e).match(/EADDRINUSE|in use|already/i)) {
-    console.error(`\n  ✗ Port ${PORT} is already in use — another local-cli web server is probably still running.\n` +
-      `    Stop the old one first (close its terminal / kill the process), then run \`bun run web\` again,\n` +
-      `    or start this one on another port:  PORT=4318 bun run web\n`);
-  } else {
-    console.error("\n  ✗ Failed to start web UI:", e?.message ?? e, "\n");
+};
+
+function boot(port: number): import("bun").Server<WSData> | null {
+  try { return Bun.serve<WSData>({ port, ...handlers }); }
+  catch (e: any) {
+    if (String(e?.message ?? e).match(/EADDRINUSE|in use|already|address/i)) return null;
+    throw e;
   }
-  process.exit(1);
 }
+
+let server = boot(PORT);
+if (!server) {
+  // The port is taken. If it's our OWN stale server (a bun/node process left
+  // behind by a previous run), free it and reuse the same port.
+  const holder = listListeningPorts().find(p => p.port === PORT);
+  if (holder && /bun|node|deno/i.test(holder.process)) {
+    console.error(`  Port ${PORT} was held by a stale ${holder.process} (pid ${holder.pid}) — freeing it…`);
+    killPort(PORT);
+    await new Promise(r => setTimeout(r, 900));
+    server = boot(PORT);
+  }
+}
+if (!server) {
+  // Still busy (or held by something unrelated) — use the next open port instead.
+  for (let p = PORT + 1; !server && p <= PORT + 25; p++) server = boot(p);
+}
+if (!server) { console.error(`\n  ✗ Couldn't find a free port near ${PORT}. Free one with the Ports panel or set PORT=...\n`); process.exit(1); }
+if (server.port !== PORT) console.error(`  (port ${PORT} was busy — using ${server.port} instead)`);
 
 function serverList() {
   return listServers().map(p => ({ id: p.id, status: p.status, url: p.url, command: p.command, exitCode: p.exitCode }));
