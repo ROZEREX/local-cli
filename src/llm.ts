@@ -377,6 +377,24 @@ async function executeCalls(
   return out;
 }
 
+// Weak models (e.g. gemma) often ANNOUNCE an action and then end the turn without
+// calling any tool — "First, I'll look for the config files." — and repeat it. We
+// nudge them to actually act (a few times), then stop with a clear notice instead
+// of leaving the user staring at a stalled chat.
+const INTENT_RE = /\b(i['’]?\s*(?:will|ll|'?m going to)|let me|first,?\s*i)\b[\s\S]{0,80}?\b(look|check|find|search|read|examine|inspect|create|write|run|fix|update|add|modify|explore|list)\b/i;
+const STALL_NUDGE = "You said what you WOULD do but did not do it. Do not explain or repeat yourself — issue the tool call right now (glob_files, list_dir, read_file, write_file, edit_file, bash, …). If there is genuinely nothing left to do, give the final result.";
+
+function lastAssistantText(history: ChatCompletionMessageParam[]): { text: string; hadToolCalls: boolean } | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i]!;
+    if (m.role === "assistant") {
+      const text = typeof m.content === "string" ? m.content : "";
+      return { text, hadToolCalls: !!(m as any).tool_calls?.length };
+    }
+  }
+  return null;
+}
+
 export async function chat(
   messages: ChatCompletionMessageParam[],
   callbacks: StreamCallbacks,
@@ -385,6 +403,22 @@ export async function chat(
   const history = [...messages];
   let useNative = await resolveUseNative(callbacks);
   let iteration = 0;
+  let stallNudges = 0;
+
+  const handleDone = (): "break" | "continue" => {
+    const last = lastAssistantText(history);
+    // Only intervene if the model produced text, called NO tool, and is either
+    // announcing an action it didn't take, or repeating itself.
+    if (last && !last.hadToolCalls && last.text.trim().length > 20 && INTENT_RE.test(last.text)) {
+      if (stallNudges < 2) {
+        history.push({ role: "user", content: STALL_NUDGE });
+        stallNudges++;
+        return "continue";
+      }
+      callbacks.onNotice?.("The model keeps saying what it will do without doing it. This model struggles with tool use — for coding, switch to a stronger model like qwen2.5-coder (use /model).");
+    }
+    return "break";
+  };
 
   while (iteration++ < MAX_ITERATIONS) {
     if (options.signal?.aborted) break;
@@ -400,11 +434,11 @@ export async function chat(
         iteration--;
         continue;
       }
-      if (outcome === "done") break;
+      if (outcome === "done") { if (handleDone() === "break") break; else continue; }
       // otherwise "continue" (tools ran) → loop
     } else {
       const more = await promptedTurn(history, callbacks, options);
-      if (!more) break;
+      if (!more) { if (handleDone() === "break") break; else continue; }
     }
   }
 
