@@ -4,6 +4,7 @@ import { glob } from "glob";
 import { spawnSync } from "child_process";
 import { getConfig } from "../config";
 import { startServer, serverLogs, stopServer, listServers, getServer, waitForStartup } from "../proc";
+import { listListeningPorts, killPort } from "../ports";
 import {
   readActiveProfile, getActiveProfileName, readProfileByName, writeProfileByName,
   setActiveProfile, listProfileNames,
@@ -367,6 +368,25 @@ export function updateProfileTool(args: { content?: string; name?: string; mode?
   return `${verb} coding profile "${target}". It will guide your work in every project from now on.`;
 }
 
+// ─── list_ports ───────────────────────────────────────────────────────────────
+export function listPortsTool(): string {
+  const ports = listListeningPorts();
+  if (!ports.length) return "No listening TCP ports found (or the port list couldn't be read on this system).";
+  const w = Math.max(...ports.map(p => String(p.port).length));
+  return "Listening TCP ports:\n" + ports
+    .map(p => `  ${String(p.port).padStart(w)}  pid ${p.pid}${p.process ? "  " + p.process : ""}${p.address ? "  (" + p.address + ")" : ""}`)
+    .join("\n") + "\n\nFree one with kill_port port=<n>.";
+}
+
+// ─── kill_port ────────────────────────────────────────────────────────────────
+export function killPortTool(args: { port?: number | string }): string {
+  const port = Number(args.port);
+  if (!port || !Number.isFinite(port)) return "Error: a numeric port is required (e.g. kill_port port=3000).";
+  const r = killPort(port);
+  if (!r.ok) return `Nothing was listening on port ${port} (or it couldn't be killed). It should be free now.`;
+  return `Freed port ${port} — killed ${r.killed.map(k => `PID ${k.pid}${k.process ? " (" + k.process + ")" : ""}`).join(", ")}.`;
+}
+
 // Normalize common arg-name variations models emit, so a slightly-off tool call
 // still works (covers native tool calls too, not just the prompted parser).
 function normalizeArgs(args: any): any {
@@ -386,6 +406,7 @@ function normalizeArgs(args: any): any {
     }
   }
   if (!args.command && args.cmd) args.command = args.cmd;
+  if (args.port == null) { for (const a of ["portNumber", "port_number", "p"]) if (args[a] != null) { args.port = args[a]; break; } }
   return args;
 }
 
@@ -440,6 +461,8 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "list_servers": return listServersTool();
     case "read_profile": return readProfileTool(args);
     case "update_profile": return updateProfileTool(args);
+    case "list_ports": return listPortsTool();
+    case "kill_port": return killPortTool(args);
     default: return `Error: Unknown tool: ${name}`;
   }
 }

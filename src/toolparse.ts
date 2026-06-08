@@ -25,7 +25,7 @@ export const TOOL_NAMES = [
   "read_file", "write_file", "edit_file", "glob_files",
   "grep_files", "list_dir", "bash", "delete_file",
   "run_server", "server_logs", "stop_server", "list_servers",
-  "read_profile", "update_profile", "ask_user",
+  "read_profile", "update_profile", "ask_user", "list_ports", "kill_port",
 ];
 
 function stripEdgeNewlines(s: string): string {

@@ -197,6 +197,26 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "list_ports",
+      description: "List the TCP ports currently being listened on, with the PID and process name for each. Use this to see what's occupying a port (e.g. when a dev server fails to start because the port is already in use).",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "kill_port",
+      description: "Free a TCP port by killing whatever process is listening on it. Use this when a port is already in use (EADDRINUSE) and you need to start a server on it — then run the server again.",
+      parameters: {
+        type: "object",
+        properties: { port: { type: "number", description: "The port number to free (e.g. 3000)" } },
+        required: ["port"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_profile",
       description: "Read the user's saved coding profile — their cross-project style and conventions (stack, naming, structure, practices). Use it to recall how they like things built.",
       parameters: {

@@ -22,6 +22,7 @@ import {
   deleteProfileByName, learnProfileInstruction, profileFilePath, availablePackageManagers,
 } from "../src/profile";
 import { listServers, serverLogs, stopServer } from "../src/proc";
+import { listListeningPorts, killPort } from "../src/ports";
 import { listDirEntries, expandSelection, readFilesAsContext } from "../src/files";
 
 const PUBLIC = join(import.meta.dir, "public");
@@ -188,6 +189,7 @@ server = Bun.serve<WSData>({
       const id = url.searchParams.get("id") || "";
       return Response.json({ id, lines: serverLogs(id, 200) });
     }
+    if (url.pathname === "/api/ports") return Response.json(listListeningPorts());
     if (url.pathname === "/api/dir") {
       const p = url.searchParams.get("path") || getConfig().cwd;
       let dir = p;
@@ -292,6 +294,8 @@ server = Bun.serve<WSData>({
         }
         case "stop_server": { stopServer(String(m.id)); send(ws, { t: "servers", list: serverList() }); break; }
         case "servers": send(ws, { t: "servers", list: serverList() }); break;
+        case "kill_port": { const r = killPort(Number(m.port)); send(ws, { t: "notice", v: r.ok ? `Freed port ${r.port} (killed ${r.killed.map(k => "PID " + k.pid).join(", ")}).` : `Nothing was listening on port ${m.port}.` }); send(ws, { t: "ports", list: listListeningPorts() }); break; }
+        case "ports": send(ws, { t: "ports", list: listListeningPorts() }); break;
       }
     },
     close(ws) { ws.data.abort?.abort(); ws.data.pending.clear(); },

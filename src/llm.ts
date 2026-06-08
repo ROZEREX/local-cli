@@ -249,9 +249,9 @@ export interface ChatOptions {
 }
 
 // Tools that change disk / run arbitrary code.
-const MUTATING_TOOLS = new Set(["write_file", "edit_file", "delete_file", "bash", "run_server", "stop_server", "update_profile"]);
+const MUTATING_TOOLS = new Set(["write_file", "edit_file", "delete_file", "bash", "run_server", "stop_server", "update_profile", "kill_port"]);
 // Read-only tools — safe to run in parallel (e.g. reading many files at once).
-const READONLY_TOOLS = new Set(["read_file", "glob_files", "grep_files", "list_dir", "server_logs", "list_servers", "read_profile"]);
+const READONLY_TOOLS = new Set(["read_file", "glob_files", "grep_files", "list_dir", "server_logs", "list_servers", "read_profile", "list_ports"]);
 const MAX_ITERATIONS = 50;
 
 // Cache tool-support detection and 400-fallbacks per baseUrl::model.

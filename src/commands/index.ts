@@ -7,7 +7,7 @@ import {
   readProfileByName, listProfileNames, getActiveProfileName, setActiveProfile,
   deleteProfileByName, detectPackageManager, resolvePackageManager,
 } from "../profile";
-import { listServersTool, stopServerTool } from "../tools/executor";
+import { listServersTool, stopServerTool, listPortsTool, killPortTool } from "../tools/executor";
 import type { Mode } from "../prompt";
 import type { Config } from "../config";
 
@@ -205,6 +205,14 @@ const commands: SlashCommand[] = [
         return;
       }
       ctx.print(listServersTool());
+    },
+  },
+  {
+    name: "ports",
+    description: "List listening ports, or free one:  /ports kill <port>",
+    run: (args, ctx) => {
+      if (args[0] === "kill" && args[1]) { ctx.print(killPortTool({ port: args[1] })); return; }
+      ctx.print(listPortsTool());
     },
   },
   {

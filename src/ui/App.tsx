@@ -60,6 +60,8 @@ function summarize(name: string, argsJson: string): string {
     case "read_profile": return a.name ? a.name : "coding profile";
     case "update_profile": return a.name ? `→ ${a.name}` : "coding profile";
     case "ask_user": return a.question ?? "";
+    case "list_ports": return "";
+    case "kill_port": return a.port ? `:${a.port}` : "";
     default: return argsJson;
   }
 }
@@ -72,6 +74,7 @@ function permDetail(name: string, args: any): string {
   if (name === "run_server") return `▶ start server: ${args.command}`;
   if (name === "stop_server") return `stop server ${args.id ?? "(latest)"}`;
   if (name === "update_profile") return `save to coding profile${args.name ? ` "${args.name}"` : ""}:\n${(args.content ?? "").slice(0, 200)}`;
+  if (name === "kill_port") return `kill whatever is listening on port ${args.port}`;
   return JSON.stringify(args);
 }
 
