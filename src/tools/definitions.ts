@@ -265,6 +265,46 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "page_read",
+      description: "Read the page the user is currently looking at, through the browser extension (their live tab). Returns the visible text plus a list of clickable elements. Use this to understand a real site the user wants you to work with (e.g. a marketplace).",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "page_find",
+      description: "Find and HIGHLIGHT elements on the user's live page that match some text, so the user can see what you mean. Returns the matches.",
+      parameters: { type: "object", properties: { query: { type: "string", description: "Text to look for on the page" } }, required: ["query"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "page_click",
+      description: "Click an element on the user's live page by visible text or CSS selector. The extension animates the AI cursor to it and highlights it first, so the user sees the action.",
+      parameters: { type: "object", properties: { target: { type: "string", description: "Visible text or CSS selector of the element to click" } }, required: ["target"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "page_highlight",
+      description: "Highlight element(s) on the user's live page (visual emphasis, no click) so you can point at what you're referring to.",
+      parameters: { type: "object", properties: { target: { type: "string", description: "Visible text or CSS selector" } }, required: ["target"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "page_scroll",
+      description: "Scroll the user's live page (down/up/top/bottom) to reveal more content.",
+      parameters: { type: "object", properties: { to: { type: "string", enum: ["down", "up", "top", "bottom"] } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "system_info",
       description: "Report the machine's hardware (CPU, RAM, GPU/VRAM) and recommend which local models will run well for coding, vision, and general use. Use when the user asks what their machine can run or which model to pull.",
       parameters: { type: "object", properties: {}, required: [] },

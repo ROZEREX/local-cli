@@ -26,11 +26,13 @@ import { listListeningPorts, killPort } from "../src/ports";
 import { systemInfo, recommendModels } from "../src/sysinfo";
 import { listDirEntries, expandSelection, readFilesAsContext } from "../src/files";
 import { browserOpen, browserReadText, browserClose } from "../src/browser";
+import { setExtension, resolveCommand } from "../src/extbridge";
 
 const PUBLIC = join(import.meta.dir, "public");
 const PORT = Number(process.env.PORT ?? 4317);
 
 interface WSData {
+  kind: "ui" | "ext";
   history: ChatCompletionMessageParam[];
   mode: Mode;
   busy: boolean;
@@ -164,10 +166,11 @@ const handlers: any = {
   async fetch(req: Request, server: any) {
     const url = new URL(req.url);
 
-    if (url.pathname === "/ws") {
+    if (url.pathname === "/ws" || url.pathname === "/ext") {
       const startMode = getConfig().mode ?? "normal";
+      const kind = url.pathname === "/ext" ? "ext" : "ui";
       const ok = server.upgrade(req, {
-        data: { history: freshHistory(startMode), mode: startMode, busy: false, abort: null, pending: new Map(), seq: 0, sessionId: newSessionId(), createdAt: Date.now() },
+        data: { kind, history: freshHistory(startMode), mode: startMode, busy: false, abort: null, pending: new Map(), seq: 0, sessionId: newSessionId(), createdAt: Date.now() },
       });
       return ok ? undefined : new Response("upgrade failed", { status: 500 });
     }
@@ -210,6 +213,12 @@ const handlers: any = {
 
   websocket: {
     async open(ws: ServerWebSocket<WSData>) {
+      if (ws.data.kind === "ext") {
+        setExtension((obj) => { try { ws.send(JSON.stringify(obj)); } catch {} });
+        send(ws, { t: "ready", config: configPayload(), ext: true });
+        send(ws, { t: "mode", mode: ws.data.mode });
+        return;
+      }
       send(ws, { t: "ready", config: configPayload() });
       send(ws, { t: "mode", mode: ws.data.mode });
       send(ws, { t: "sessions", list: listSessions(getConfig().cwd), active: ws.data.sessionId });
@@ -218,6 +227,8 @@ const handlers: any = {
     },
     async message(ws: ServerWebSocket<WSData>, raw: string | Buffer) {
       let m: any; try { m = JSON.parse(String(raw)); } catch { return; }
+      // The extension reports the result of a page command (page_read/click/…).
+      if (m.t === "cmdreply") { resolveCommand(m.id, m.result); return; }
       const cfg = getConfig();
       switch (m.t) {
         case "chat": if (typeof m.text === "string" && m.text.trim()) void runChat(ws, m.text.trim()); break;
@@ -307,7 +318,7 @@ const handlers: any = {
         case "ports": send(ws, { t: "ports", list: listListeningPorts() }); break;
       }
     },
-    close(ws: ServerWebSocket<WSData>) { ws.data.abort?.abort(); ws.data.pending.clear(); },
+    close(ws: ServerWebSocket<WSData>) { if (ws.data.kind === "ext") setExtension(null); ws.data.abort?.abort(); ws.data.pending.clear(); },
   },
 };
 

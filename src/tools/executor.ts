@@ -8,6 +8,7 @@ import { listListeningPorts, killPort } from "../ports";
 import { browserOpen, browserReadText, browserClick, browserScreenshot, browserConsole, browserClose } from "../browser";
 import { captureDesktop, analyzeImage } from "../vision";
 import { systemInfo, recommendModels, describeSystem } from "../sysinfo";
+import { sendCommand, extensionConnected } from "../extbridge";
 import {
   readActiveProfile, getActiveProfileName, readProfileByName, writeProfileByName,
   setActiveProfile, listProfileNames,
@@ -430,6 +431,48 @@ export async function screenshotTool(args: { question?: string }): Promise<strin
   } catch (e: any) { return `Error: ${e.message}`; }
 }
 
+// ─── page_* (act on the user's LIVE tab via the browser extension) ────────────
+const NO_EXT = "No browser extension connected. Ask the user to open the local-cli panel (the floating chat) on the page they want you to work with.";
+
+export async function pageReadTool(): Promise<string> {
+  if (!extensionConnected()) return NO_EXT;
+  try {
+    const r = await sendCommand("read");
+    const els = (r.elements || []).map((e: any, i: number) => `  [${i}] <${e.tag}> ${e.text}${e.href ? "  → " + e.href : ""}`).join("\n");
+    return `Page: ${r.title}\nURL: ${r.url}\n\nVisible text:\n${(r.text || "").slice(0, 5000)}\n\nClickable elements (use the text with page_click):\n${els || "  (none found)"}`;
+  } catch (e: any) { return `Error reading the page: ${e.message}`; }
+}
+export async function pageFindTool(args: { query?: string }): Promise<string> {
+  if (!extensionConnected()) return NO_EXT;
+  if (!args.query) return "Error: a query (text to search for) is required.";
+  try {
+    const r = await sendCommand("find", { query: args.query });
+    if (!r.matches?.length) return `No elements matching "${args.query}".`;
+    return `Found ${r.matches.length} match(es) (highlighted on the page):\n` + r.matches.map((m: any, i: number) => `  [${i}] <${m.tag}> ${m.text}${m.href ? "  → " + m.href : ""}`).join("\n");
+  } catch (e: any) { return `Error: ${e.message}`; }
+}
+export async function pageClickTool(args: { target?: string }): Promise<string> {
+  if (!extensionConnected()) return NO_EXT;
+  if (!args.target) return "Error: target (visible text or CSS selector) is required.";
+  try {
+    const r = await sendCommand("click", { target: args.target });
+    return r.ok ? `Moved the cursor to and clicked: "${r.label}".` : `Couldn't find an element matching "${args.target}" to click.`;
+  } catch (e: any) { return `Error clicking: ${e.message}`; }
+}
+export async function pageHighlightTool(args: { target?: string }): Promise<string> {
+  if (!extensionConnected()) return NO_EXT;
+  if (!args.target) return "Error: target is required.";
+  try {
+    const r = await sendCommand("highlight", { target: args.target });
+    return r.ok ? `Highlighted ${r.count} element(s) on the page for the user.` : `Nothing matched "${args.target}".`;
+  } catch (e: any) { return `Error: ${e.message}`; }
+}
+export async function pageScrollTool(args: { to?: string }): Promise<string> {
+  if (!extensionConnected()) return NO_EXT;
+  try { await sendCommand("scroll", { to: args.to || "down" }); return `Scrolled ${args.to || "down"}.`; }
+  catch (e: any) { return `Error: ${e.message}`; }
+}
+
 // ─── system_info (hardware eval + model recommendations) ──────────────────────
 export function systemInfoTool(): string {
   const info = systemInfo();
@@ -520,6 +563,11 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "browser_close": return await browserCloseTool();
     case "screenshot": return await screenshotTool(args);
     case "system_info": return systemInfoTool();
+    case "page_read": return await pageReadTool();
+    case "page_find": return await pageFindTool(args);
+    case "page_click": return await pageClickTool(args);
+    case "page_highlight": return await pageHighlightTool(args);
+    case "page_scroll": return await pageScrollTool(args);
     default: return `Error: Unknown tool: ${name}`;
   }
 }
