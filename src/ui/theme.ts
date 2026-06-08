@@ -74,6 +74,7 @@ export const toolIcon: Record<string, string> = {
   browser_screenshot: "▦",
   browser_close: "◌",
   screenshot: "▦",
+  system_info: "▤",
 };
 
 // Accent color per tool, for the card's left border.
@@ -101,4 +102,5 @@ export const toolColor: Record<string, string> = {
   browser_screenshot: theme.color.accent,
   browser_close: theme.color.dim,
   screenshot: theme.color.accent,
+  system_info: theme.color.accent,
 };

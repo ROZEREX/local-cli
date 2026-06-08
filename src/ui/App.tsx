@@ -177,7 +177,7 @@ export function App({ autoResume = false }: AppProps) {
   const [usage, setUsage] = useState({ inTok: 0, outTok: 0, tps: 0 }); // session totals + last speed
   const [liveOut, setLiveOut] = useState(0);  // live output tokens for the in-flight turn
   const [elapsed, setElapsed] = useState(0);  // seconds the current turn has been running
-  const [mode, setModeState] = useState<Mode>("normal");
+  const [mode, setModeState] = useState<Mode>((cfg.mode as Mode) ?? "normal");
   const [, force] = useReducer((x: number) => x + 1, 0);
 
   const historyRef = useRef<ChatCompletionMessageParam[]>([{ role: "system", content: systemPrompt({ mode: "normal" }) }]);
@@ -187,7 +187,7 @@ export function App({ autoResume = false }: AppProps) {
   const abortRef = useRef<AbortController | null>(null);
   const sessionAllowRef = useRef<Set<string>>(new Set());
   const currentToolRef = useRef<{ name: string; summary: string } | null>(null);
-  const modeRef = useRef<Mode>("normal");
+  const modeRef = useRef<Mode>((cfg.mode as Mode) ?? "normal");
   const turnHadAnswerRef = useRef(false);
   const sessionIdRef = useRef<string>(newSessionId());
   const createdAtRef = useRef<number>(Date.now());
@@ -230,6 +230,7 @@ export function App({ autoResume = false }: AppProps) {
   const setMode = (m: Mode) => {
     modeRef.current = m;
     setModeState(m);
+    saveConfig({ mode: m }); // persist so it sticks across restarts (and the web UI)
     // Refresh the system prompt so plan-mode instructions take effect next turn.
     historyRef.current[0] = { role: "system", content: systemPrompt({ mode: m }) };
   };

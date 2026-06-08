@@ -7,7 +7,7 @@ import {
   readProfileByName, listProfileNames, getActiveProfileName, setActiveProfile,
   deleteProfileByName, detectPackageManager, resolvePackageManager,
 } from "../profile";
-import { listServersTool, stopServerTool, listPortsTool, killPortTool } from "../tools/executor";
+import { listServersTool, stopServerTool, listPortsTool, killPortTool, systemInfoTool } from "../tools/executor";
 import type { Mode } from "../prompt";
 import type { Config } from "../config";
 
@@ -206,6 +206,11 @@ const commands: SlashCommand[] = [
       }
       ctx.print(listServersTool());
     },
+  },
+  {
+    name: "system",
+    description: "Show hardware (CPU/RAM/GPU) and recommended models for your machine",
+    run: (_args, ctx) => ctx.print(systemInfoTool()),
   },
   {
     name: "ports",

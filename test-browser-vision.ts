@@ -10,7 +10,7 @@ let pass = 0, fail = 0;
 const check = (l: string, c: boolean, d = "") => { c ? (pass++, console.log(`  ✓ ${l}`)) : (fail++, console.log(`  ✗ ${l} ${d}`)); };
 
 // registration
-const names = TOOL_DEFINITIONS.map(t => t.function.name);
+const names = TOOL_DEFINITIONS.map((t: any) => t.function.name);
 for (const n of ["browser_open", "browser_read", "browser_click", "browser_screenshot", "browser_close", "screenshot"]) {
   check(`${n} is a registered tool`, names.includes(n));
 }

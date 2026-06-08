@@ -27,6 +27,7 @@ export const TOOL_NAMES = [
   "run_server", "server_logs", "stop_server", "list_servers",
   "read_profile", "update_profile", "ask_user", "list_ports", "kill_port",
   "browser_open", "browser_read", "browser_click", "browser_screenshot", "browser_close", "screenshot",
+  "system_info",
 ];
 
 function stripEdgeNewlines(s: string): string {

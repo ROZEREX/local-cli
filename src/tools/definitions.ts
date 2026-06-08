@@ -265,6 +265,14 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "system_info",
+      description: "Report the machine's hardware (CPU, RAM, GPU/VRAM) and recommend which local models will run well for coding, vision, and general use. Use when the user asks what their machine can run or which model to pull.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_profile",
       description: "Read the user's saved coding profile — their cross-project style and conventions (stack, naming, structure, practices). Use it to recall how they like things built.",
       parameters: {

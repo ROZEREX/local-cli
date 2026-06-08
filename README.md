@@ -21,6 +21,28 @@ printing a markdown block instead; raw bodies fix that, so the model reliably
 **creates the actual files** (complete, untruncated) rather than telling you to
 save them yourself.
 
+## Recommended models per task
+
+Different jobs want different models. Run **`/system`** (CLI) or open the
+**System** panel (web) for a hardware check + picks tuned to your RAM/VRAM.
+
+| Task | Good local models |
+|---|---|
+| **Coding** | `qwen2.5-coder` (3B/7B/14B/32B — pick by VRAM) — the most reliable local coder |
+| **Vision** (`browser_screenshot`, `screenshot`) | `qwen2.5vl`, `llava`, `llama3.2-vision`, `moondream` |
+| **General / reasoning / tools** | `qwen3`, `gemma3` |
+
+Rough VRAM (Q4): 3B ≈ 3 GB · 7B ≈ 6 GB · 14B ≈ 10 GB · 32B ≈ 20 GB. No GPU? It
+runs on CPU+RAM, just slower. The `system_info` tool / `/system` command evaluates
+your CPU, RAM, and GPU/VRAM and tells you what fits.
+
+## Autonomy
+
+Three modes (persist across restarts): **normal** asks before each mutating action,
+**plan** researches first, **auto** runs everything by itself. Set **auto** once
+(shift+tab in the CLI, or the mode toggle in the web header) and the agent works
+unattended — no per-action approvals.
+
 ## Setup
 
 ### Windows

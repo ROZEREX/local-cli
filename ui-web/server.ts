@@ -23,7 +23,9 @@ import {
 } from "../src/profile";
 import { listServers, serverLogs, stopServer } from "../src/proc";
 import { listListeningPorts, killPort } from "../src/ports";
+import { systemInfo, recommendModels } from "../src/sysinfo";
 import { listDirEntries, expandSelection, readFilesAsContext } from "../src/files";
+import { browserOpen, browserScreenshot, browserReadText, browserClose } from "../src/browser";
 
 const PUBLIC = join(import.meta.dir, "public");
 const PORT = Number(process.env.PORT ?? 4317);
@@ -50,7 +52,7 @@ function configPayload() {
     model: cfg.model, cwd: cfg.cwd, contextWindow: cfg.contextWindow, baseUrl: cfg.baseUrl,
     thinking: cfg.thinking !== false, packageManager: cfg.packageManager,
     activeProfile: getActiveProfileName(), profiles: listProfileNames(),
-    availablePM: availablePackageManagers(),
+    availablePM: availablePackageManagers(), mode: cfg.mode ?? "normal",
   };
 }
 
@@ -166,8 +168,9 @@ server = Bun.serve<WSData>({
     const url = new URL(req.url);
 
     if (url.pathname === "/ws") {
+      const startMode = getConfig().mode ?? "normal";
       const ok = server.upgrade(req, {
-        data: { history: freshHistory("normal"), mode: "normal", busy: false, abort: null, pending: new Map(), seq: 0, sessionId: newSessionId(), createdAt: Date.now() },
+        data: { history: freshHistory(startMode), mode: startMode, busy: false, abort: null, pending: new Map(), seq: 0, sessionId: newSessionId(), createdAt: Date.now() },
       });
       return ok ? undefined : new Response("upgrade failed", { status: 500 });
     }
@@ -194,6 +197,7 @@ server = Bun.serve<WSData>({
       return Response.json({ id, lines: serverLogs(id, 200) });
     }
     if (url.pathname === "/api/ports") return Response.json(listListeningPorts());
+    if (url.pathname === "/api/system") { const info = systemInfo(); return Response.json({ info, recommendations: recommendModels(info) }); }
     if (url.pathname === "/api/dir") {
       const p = url.searchParams.get("path") || getConfig().cwd;
       let dir = p;
@@ -210,6 +214,7 @@ server = Bun.serve<WSData>({
   websocket: {
     async open(ws) {
       send(ws, { t: "ready", config: configPayload() });
+      send(ws, { t: "mode", mode: ws.data.mode });
       send(ws, { t: "sessions", list: listSessions(getConfig().cwd), active: ws.data.sessionId });
       pushContext(ws);
       void warmUp();
@@ -223,7 +228,7 @@ server = Bun.serve<WSData>({
         case "choice": { const r = ws.data.pending.get(m.id); if (r) { ws.data.pending.delete(m.id); r(String(m.answer ?? "")); } break; }
         case "interrupt": ws.data.abort?.abort(); break;
         case "new": newChat(ws); break;
-        case "set_mode": if (["normal", "plan", "auto"].includes(m.mode)) { ws.data.mode = m.mode; send(ws, { t: "mode", mode: m.mode }); } break;
+        case "set_mode": if (["normal", "plan", "auto"].includes(m.mode)) { ws.data.mode = m.mode; saveConfig({ mode: m.mode }); send(ws, { t: "mode", mode: m.mode }); } break;
         case "set_thinking": saveConfig({ thinking: !!m.on }); pushConfig(ws); break;
         case "set_pm": if (["auto", "bun", "npm", "pnpm", "yarn"].includes(m.pm)) { saveConfig({ packageManager: m.pm }); pushConfig(ws); } break;
         case "set_profile": if (typeof m.name === "string") { setActiveProfile(m.name); pushConfig(ws); send(ws, { t: "notice", v: `Active coding profile: ${m.name}` }); } break;
@@ -298,6 +303,9 @@ server = Bun.serve<WSData>({
         }
         case "stop_server": { stopServer(String(m.id)); send(ws, { t: "servers", list: serverList() }); break; }
         case "servers": send(ws, { t: "servers", list: serverList() }); break;
+        case "browser_open": { try { const r = await browserOpen(String(m.url)); const img = await browserScreenshot(); send(ws, { t: "browser_state", url: r.url, title: r.title, image: img }); } catch (e: any) { send(ws, { t: "browser_state", error: e.message }); } break; }
+        case "browser_shot": { try { const img = await browserScreenshot(); const text = await browserReadText().catch(() => ""); send(ws, { t: "browser_state", image: img, text }); } catch (e: any) { send(ws, { t: "browser_state", error: e.message }); } break; }
+        case "browser_close": { await browserClose().catch(() => {}); send(ws, { t: "browser_state", closed: true }); break; }
         case "kill_port": { const r = killPort(Number(m.port)); send(ws, { t: "notice", v: r.ok ? `Freed port ${r.port} (killed ${r.killed.map(k => "PID " + k.pid).join(", ")}).` : `Nothing was listening on port ${m.port}.` }); send(ws, { t: "ports", list: listListeningPorts() }); break; }
         case "ports": send(ws, { t: "ports", list: listListeningPorts() }); break;
       }

@@ -151,7 +151,12 @@ export async function browserClick(target: string): Promise<string> {
       el = all.find(e => (e.innerText || e.value || '').trim().toLowerCase().includes(t.toLowerCase()));
     }
     if (!el) return 'NOT_FOUND';
-    el.scrollIntoView({block:'center'}); el.click();
+    el.scrollIntoView({block:'center'});
+    // Flash a highlight so the action is visible to a watching user.
+    const prev = el.style.outline, prevOff = el.style.outlineOffset;
+    el.style.outline = '3px solid #7aa2f7'; el.style.outlineOffset = '2px';
+    setTimeout(() => { el.style.outline = prev; el.style.outlineOffset = prevOff; }, 1200);
+    el.click();
     return 'CLICKED:' + (el.innerText || el.value || el.tagName).slice(0,60);
   })()`;
   const r = await evalJs(js);

@@ -7,6 +7,7 @@ import { startServer, serverLogs, stopServer, listServers, getServer, waitForSta
 import { listListeningPorts, killPort } from "../ports";
 import { browserOpen, browserReadText, browserClick, browserScreenshot, browserConsole, browserClose } from "../browser";
 import { captureDesktop, analyzeImage } from "../vision";
+import { systemInfo, recommendModels, describeSystem } from "../sysinfo";
 import {
   readActiveProfile, getActiveProfileName, readProfileByName, writeProfileByName,
   setActiveProfile, listProfileNames,
@@ -429,6 +430,12 @@ export async function screenshotTool(args: { question?: string }): Promise<strin
   } catch (e: any) { return `Error: ${e.message}`; }
 }
 
+// ─── system_info (hardware eval + model recommendations) ──────────────────────
+export function systemInfoTool(): string {
+  const info = systemInfo();
+  return describeSystem(info, recommendModels(info));
+}
+
 // Normalize common arg-name variations models emit, so a slightly-off tool call
 // still works (covers native tool calls too, not just the prompted parser).
 function normalizeArgs(args: any): any {
@@ -512,6 +519,7 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "browser_screenshot": return await browserScreenshotTool(args);
     case "browser_close": return await browserCloseTool();
     case "screenshot": return await screenshotTool(args);
+    case "system_info": return systemInfoTool();
     default: return `Error: Unknown tool: ${name}`;
   }
 }
