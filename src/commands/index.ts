@@ -2,12 +2,19 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { getConfig, saveConfig } from "../config";
 import { resetClient } from "../llm";
 import { findProjectContext } from "../context";
-import { listOllamaModelsDetailed, modelInfo, modelHint, formatCtx } from "../ollama";
+import { listOllamaModelsWithContext, modelInfo, modelHint, formatCtx, agentFitnessWarning, loadedModels, isOllama, formatLoadedModels } from "../ollama";
 import {
   readProfileByName, listProfileNames, getActiveProfileName, setActiveProfile,
   deleteProfileByName, detectPackageManager, resolvePackageManager,
 } from "../profile";
 import { listServersTool, stopServerTool, listPortsTool, killPortTool, systemInfoTool } from "../tools/executor";
+import { undoLast, describeHistory } from "../history";
+import { readMemory, addMemory, forgetMemory, clearMemory } from "../memory";
+import { describeTasks, addTask, completeTask, removeDoneTasks, clearTasks } from "../tasks";
+import { ensureIndex, searchCode, formatSearchResults } from "../search";
+import { describeIndex } from "../indexer";
+import { runSubAgents, formatAgentResults } from "../agents";
+import { applyTheme, themeNames } from "../ui/theme";
 import type { Mode } from "../prompt";
 import type { Config } from "../config";
 
@@ -33,6 +40,8 @@ export interface CommandContext {
   learnProfile: (name?: string) => void;
   // Open the picker to choose which saved profile is active.
   openProfilePicker: () => void;
+  // Run the agent on a canned instruction (used by /review, /debug, …).
+  runAgent: (display: string, instruction: string) => void;
 }
 
 export interface SlashCommand {
@@ -72,6 +81,10 @@ const commands: SlashCommand[] = [
       saveConfig({ model: args[0] });
       resetClient();
       ctx.print(`Model set to ${args[0]}`);
+      // Warn up front if this model can't act as an agent (best-effort, async).
+      void agentFitnessWarning(getConfig().baseUrl, args[0]!)
+        .then(w => { if (w) ctx.print(w); })
+        .catch(() => {});
     },
   },
   {
@@ -80,7 +93,7 @@ const commands: SlashCommand[] = [
     run: async (_args, ctx) => {
       const cfg = getConfig();
       try {
-        const live = await listOllamaModelsDetailed(cfg.baseUrl);
+        const live = await listOllamaModelsWithContext(cfg.baseUrl);
         if (live.length) {
           const width = Math.max(...live.map(m => m.name.length));
           ctx.print(
@@ -213,6 +226,35 @@ const commands: SlashCommand[] = [
     run: (_args, ctx) => ctx.print(systemInfoTool()),
   },
   {
+    name: "browser",
+    description: "Guide: how the agent uses browsers (its own + your live one)",
+    run: (_args, ctx) => {
+      ctx.print([
+        "Browser control — the agent can drive a browser two ways:",
+        "",
+        "1) ITS OWN browser (no setup) — for testing what it builds.",
+        "   It launches a separate Chrome/Edge window and uses browser_open /",
+        "   browser_read / browser_click / browser_type / browser_scroll /",
+        "   browser_screenshot. You see an animated AI cursor with a click/type",
+        "   label and element highlights in that window. In the web UI, the",
+        "   Browser tab streams it LIVE while it works.",
+        "   Try: \"start my app, open it in the browser and check the layout\"",
+        "",
+        "2) YOUR live browser (extension, one-time setup) — for real sites.",
+        "   Setup: bun run web → chrome://extensions → Developer mode →",
+        "   Load unpacked → select this repo's extension/ folder.",
+        "   A ◆ bubble appears on pages (green dot = connected). The agent then",
+        "   uses page_open / page_read / page_find / page_click / page_type /",
+        "   page_highlight on the tab YOU are looking at — same cursor +",
+        "   highlights, on your real session (logins included).",
+        "   Try: \"open amazon.com and highlight the cheapest mechanical keyboard\"",
+        "",
+        "Safety: in normal mode it asks before every click/type; auto mode acts",
+        "alone — careful on pages with real forms or purchases.",
+      ].join("\n"));
+    },
+  },
+  {
     name: "ports",
     description: "List listening ports, or free one:  /ports kill <port>",
     run: (args, ctx) => {
@@ -327,9 +369,11 @@ const commands: SlashCommand[] = [
             `  model:         ${cfg.model}`,
             `  maxTokens:     ${cfg.maxTokens}`,
             `  temperature:   ${cfg.temperature}`,
-            `  contextWindow: ${cfg.contextWindow}`,
+            `  contextWindow: ${cfg.contextWindow}  (auto-set to the model's native limit on each model switch)`,
             `  autoCompact:   ${cfg.autoCompact}`,
             `  loopGuard:     ${cfg.loopGuard}  (auto-stop runaway repeat loops; off by default)`,
+            `  stallHeartbeatSec: ${cfg.stallHeartbeatSec}  ("still loading" heartbeat while waiting for the first token; 0 = off)`,
+            `  stallTimeoutSec:   ${cfg.stallTimeoutSec}  (abort+retry if no first token within this many seconds; 0 = off)`,
             `  alwaysAllow:   ${(cfg.alwaysAllow ?? []).join(", ") || "(none)"}  (tools that never prompt; manage with /allow)`,
             `  cwd:           ${cfg.cwd}`,
             "",
@@ -341,7 +385,7 @@ const commands: SlashCommand[] = [
       const [key, ...rest] = args;
       if (!key) return;
       const value = rest.join(" ");
-      const numeric = ["maxTokens", "temperature", "contextWindow"];
+      const numeric = ["maxTokens", "temperature", "contextWindow", "debugMaxIterations", "stallHeartbeatSec", "stallTimeoutSec"];
       const bool = ["autoCompact", "loopGuard"];
       const updates: any = {};
       updates[key] = numeric.includes(key) ? Number(value)
@@ -389,6 +433,266 @@ const commands: SlashCommand[] = [
     run: (_args, ctx) => {
       ctx.clearHistory();
       ctx.print("Conversation cleared.");
+    },
+  },
+  {
+    name: "undo",
+    description: "Revert the agent's file changes:  /undo · /undo 3 · /undo list",
+    run: (args, ctx) => {
+      if (args[0] === "list") { ctx.print(describeHistory()); return; }
+      const n = args[0] ? Number(args[0]) : 1;
+      if (!Number.isInteger(n) || n < 1) { ctx.print("Usage: /undo [count] — e.g. /undo or /undo 3. /undo list shows the history.", "error"); return; }
+      ctx.print(undoLast(n));
+    },
+  },
+  {
+    name: "tasks",
+    description: "Project task list:  /tasks · add <text> · done <n|text> · clean · clear",
+    run: (args, ctx) => {
+      const sub = args[0]?.toLowerCase();
+      if (!sub) { ctx.print(describeTasks()); return; }
+      if (sub === "add") {
+        const text = args.slice(1).join(" ").trim();
+        if (!text) { ctx.print("Usage: /tasks add <text>", "error"); return; }
+        addTask(text);
+        ctx.print(describeTasks());
+        return;
+      }
+      if (sub === "done") {
+        const ref = args.slice(1).join(" ").trim();
+        if (!ref) { ctx.print("Usage: /tasks done <number | part of the text>", "error"); return; }
+        const r = completeTask(ref);
+        ctx.print(r.ok ? `Marked done: "${r.task!.text}".\n\n${describeTasks()}` : `No task matched "${ref}".`, r.ok ? undefined : "error");
+        return;
+      }
+      if (sub === "clean") { const n = removeDoneTasks(); ctx.print(`Removed ${n} completed task${n === 1 ? "" : "s"}.\n\n${describeTasks()}`); return; }
+      if (sub === "clear") { clearTasks(); ctx.print("Task list cleared."); return; }
+      ctx.print("Usage: /tasks · /tasks add <text> · /tasks done <n|text> · /tasks clean · /tasks clear", "error");
+    },
+  },
+  {
+    name: "task",
+    description: "Alias of /tasks",
+    run: (args, ctx) => commandMap.get("tasks")!.run(args, ctx),
+  },
+  {
+    name: "memory",
+    description: "Project memory:  /memory · add <fact> · forget <text> · clear",
+    run: (args, ctx) => {
+      const sub = args[0]?.toLowerCase();
+      if (!sub) {
+        const mem = readMemory();
+        ctx.print(mem
+          ? `Project memory (.local-cli/memory.md — injected into every prompt):\n\n${mem}`
+          : "Project memory is empty. The agent saves durable facts here with the remember tool; you can too: /memory add <fact>.");
+        return;
+      }
+      if (sub === "add") {
+        const fact = args.slice(1).join(" ").trim();
+        if (!fact) { ctx.print("Usage: /memory add <fact>", "error"); return; }
+        const { added } = addMemory(fact);
+        ctx.print(added ? "Saved to project memory." : "That's already in memory.");
+        return;
+      }
+      if (sub === "forget") {
+        const match = args.slice(1).join(" ").trim();
+        if (!match) { ctx.print("Usage: /memory forget <text to match>", "error"); return; }
+        const n = forgetMemory(match);
+        ctx.print(n ? `Forgot ${n} memory line${n === 1 ? "" : "s"} matching "${match}".` : `Nothing in memory matches "${match}".`);
+        return;
+      }
+      if (sub === "clear") { ctx.print(clearMemory() ? "Project memory cleared." : "Memory was already empty."); return; }
+      ctx.print("Usage: /memory · /memory add <fact> · /memory forget <text> · /memory clear", "error");
+    },
+  },
+  {
+    name: "index",
+    description: "(Re)build the workspace code index used by /search and search_code",
+    run: async (_args, ctx) => {
+      ctx.print("Indexing workspace… (symbols + chunks; embeddings if an embedding model is installed)");
+      try {
+        const idx = await ensureIndex({ rebuild: true });
+        ctx.print(describeIndex(idx));
+      } catch (e: any) {
+        ctx.print(`Indexing failed: ${e.message}`, "error");
+      }
+    },
+  },
+  {
+    name: "search",
+    description: "Semantic code search:  /search where are JWT tokens generated",
+    run: async (args, ctx) => {
+      const query = args.join(" ").trim();
+      if (!query) { ctx.print("Usage: /search <what you're looking for, in plain words>", "error"); return; }
+      try {
+        const r = await searchCode(query);
+        ctx.print(formatSearchResults(query, r));
+      } catch (e: any) {
+        ctx.print(`Search failed: ${e.message}`, "error");
+      }
+    },
+  },
+  {
+    name: "agents",
+    description: "Run parallel sub-agents:  /agents investigate X | review Y | test Z",
+    run: async (args, ctx) => {
+      const tasks = args.join(" ").split("|").map(t => t.trim()).filter(Boolean);
+      if (tasks.length === 0) {
+        ctx.print("Usage: /agents <task 1> | <task 2> | …  (max 4; each gets a fresh context and reports back)\nSub-agents are read-only — they investigate and report. The main agent can then implement.", "error");
+        return;
+      }
+      ctx.print(`Spawning ${tasks.length} sub-agent${tasks.length === 1 ? "" : "s"}…\n${tasks.map((t, i) => `  ${String.fromCharCode(65 + i)}: ${t}`).join("\n")}\n(They share the local model, so they run queued — this can take a while.)`);
+      try {
+        const results = await runSubAgents(tasks);
+        ctx.print(formatAgentResults(results));
+        // Hand the reports to the MAIN conversation so the user can say "ok, do it".
+        ctx.history.push({ role: "user", content: `[sub-agent reports — for your context]\n${formatAgentResults(results)}` });
+      } catch (e: any) {
+        ctx.print(`Sub-agents failed: ${e.message}`, "error");
+      }
+    },
+  },
+  {
+    name: "review",
+    description: "Review the working tree's pending changes (git diff) for bugs & quality",
+    run: (_args, ctx) => {
+      ctx.runAgent(
+        "/review — reviewing pending changes",
+        "Review the pending changes in this repository like a senior engineer:\n" +
+        "1. Run `git status --short` and `git diff` (and `git diff --staged`) with bash. If the diff is empty, review the latest commit instead (`git show --stat HEAD` then `git show HEAD`).\n" +
+        "2. For each changed file, read enough surrounding code (read_file) to judge the change in context.\n" +
+        "3. Report: (a) bugs or logic errors, (b) security issues, (c) regressions/breaking changes, (d) code-quality improvements — each with file:line and a concrete suggestion. Order by severity.\n" +
+        "4. Do NOT modify anything — this is a read-only review. End with a short verdict: safe to commit, or fix X first."
+      );
+    },
+  },
+  {
+    name: "ps",
+    description: "Show models resident in Ollama: VRAM residency + unload timer",
+    run: async (_args, ctx) => {
+      const cfg = getConfig();
+      if (!(await isOllama(cfg.baseUrl))) {
+        ctx.print(`/ps needs Ollama — the endpoint ${cfg.baseUrl} doesn't look like Ollama.`, "error");
+        return;
+      }
+      const models = await loadedModels(cfg.baseUrl);
+      ctx.print(formatLoadedModels(models, cfg.model));
+    },
+  },
+  {
+    name: "benchmark",
+    description: "Measure the current model's real speed (load, prefill, tokens/sec)",
+    run: async (_args, ctx) => {
+      const cfg = getConfig();
+      ctx.print(`Benchmarking ${cfg.model}…`);
+      try {
+        const host = cfg.baseUrl.replace(/\/v1\/?$/, "").replace(/\/+$/, "");
+        const t0 = Date.now();
+        const res = await fetch(`${host}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: cfg.model,
+            prompt: "Write a 150-word explanation of how a hash map works internally.",
+            stream: false,
+            options: { num_predict: 256, temperature: 0.3, num_ctx: cfg.contextWindow },
+            keep_alive: cfg.keepAlive ?? "30m",
+          }),
+        });
+        if (!res.ok) throw new Error(`Ollama returned ${res.status}`);
+        const data: any = await res.json();
+        const wall = (Date.now() - t0) / 1000;
+        const ns = 1e9;
+        const loadS = (data.load_duration ?? 0) / ns;
+        const prefillTok = data.prompt_eval_count ?? 0;
+        const prefillS = (data.prompt_eval_duration ?? 0) / ns;
+        const genTok = data.eval_count ?? 0;
+        const genS = (data.eval_duration ?? 0) / ns;
+        ctx.print([
+          `Benchmark — ${cfg.model}`,
+          `  Model load:   ${loadS < 0.05 ? "already resident" : loadS.toFixed(1) + "s"}`,
+          `  Prefill:      ${prefillTok} tokens in ${prefillS.toFixed(2)}s${prefillS > 0 ? ` (${(prefillTok / prefillS).toFixed(0)} tok/s)` : ""}`,
+          `  Generation:   ${genTok} tokens in ${genS.toFixed(2)}s${genS > 0 ? ` (${(genTok / genS).toFixed(1)} tok/s)` : ""}`,
+          `  Wall clock:   ${wall.toFixed(1)}s end to end`,
+          "",
+          genS > 0 && genTok / genS < 10 ? "⚠ Under 10 tok/s usually means the model doesn't fit in VRAM — check /system." : "Speed looks healthy for local inference.",
+        ].join("\n"));
+      } catch (e: any) {
+        ctx.print(`Benchmark failed: ${e.message} (the /api/generate benchmark needs Ollama).`, "error");
+      }
+    },
+  },
+  {
+    name: "export",
+    description: "Export this conversation to markdown:  /export [file]",
+    run: (args, ctx) => {
+      const { writeFileSync } = require("fs");
+      const { resolve } = require("path");
+      const cfg = getConfig();
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
+      const file = args[0] || `chat-export-${stamp}.md`;
+      const fp = resolve(cfg.cwd, file);
+      const lines: string[] = [`# local-cli session — ${new Date().toLocaleString()}`, `Model: ${cfg.model}`, ""];
+      for (const m of ctx.history) {
+        if (m.role === "system") continue;
+        if (m.role === "user") {
+          const text = typeof m.content === "string" ? m.content : "";
+          if (text.startsWith("[automatic notice") || text.startsWith("<tool_response")) continue;
+          lines.push(`## ❯ User\n\n${text}\n`);
+        } else if (m.role === "assistant") {
+          const text = typeof m.content === "string" ? m.content : "";
+          if (text.trim()) lines.push(`## ◆ Assistant\n\n${text}\n`);
+          for (const tc of (m as any).tool_calls ?? []) {
+            lines.push(`> 🛠 ${tc.function.name}(${(tc.function.arguments ?? "").slice(0, 200)})`);
+          }
+        } else if (m.role === "tool") {
+          const text = typeof m.content === "string" ? m.content : "";
+          lines.push("```\n" + text.slice(0, 800) + (text.length > 800 ? "\n… (truncated)" : "") + "\n```\n");
+        }
+      }
+      try {
+        writeFileSync(fp, lines.join("\n"), "utf-8");
+        ctx.print(`Exported ${ctx.history.length} messages to ${file}`);
+      } catch (e: any) {
+        ctx.print(`Export failed: ${e.message}`, "error");
+      }
+    },
+  },
+  {
+    name: "theme",
+    description: "Switch the color theme:  /theme tokyo|dark|light|mono",
+    run: (args, ctx) => {
+      const names = themeNames();
+      const name = args[0]?.toLowerCase();
+      if (!name) {
+        ctx.print(`Current theme: ${getConfig().theme}\nAvailable: ${names.join(", ")}\nSwitch with /theme <name>.`);
+        return;
+      }
+      if (!applyTheme(name)) { ctx.print(`Unknown theme "${name}". Available: ${names.join(", ")}`, "error"); return; }
+      saveConfig({ theme: name });
+      ctx.print(`Theme set to ${name}. (Colors apply to everything rendered from now on.)`);
+    },
+  },
+  {
+    name: "sandbox",
+    description: "Run bash commands in a container:  /sandbox docker|podman|off",
+    run: (args, ctx) => {
+      const cfg = getConfig();
+      const sub = args[0]?.toLowerCase();
+      if (!sub || sub === "status") {
+        ctx.print(cfg.sandbox === "none"
+          ? "Sandbox OFF — bash commands run directly on this machine.\nEnable with /sandbox docker (or podman). Image: /sandbox image <name>."
+          : `Sandbox ON — bash commands run inside ${cfg.sandbox} (image: ${cfg.sandboxImage}, project mounted at /work).\nDisable with /sandbox off.`);
+        return;
+      }
+      if (sub === "off" || sub === "none") { saveConfig({ sandbox: "none" }); ctx.print("Sandbox disabled — bash runs on the host again."); return; }
+      if (sub === "docker" || sub === "podman") {
+        saveConfig({ sandbox: sub });
+        ctx.print(`Sandbox enabled: bash commands now run inside ${sub} (image: ${getConfig().sandboxImage}, project mounted at /work).\nNote: dev servers (run_server) still run on the host so their ports stay reachable.`);
+        return;
+      }
+      if (sub === "image" && args[1]) { saveConfig({ sandboxImage: args[1] }); ctx.print(`Sandbox image set to ${args[1]}.`); return; }
+      ctx.print("Usage: /sandbox docker|podman|off|status · /sandbox image <name>", "error");
     },
   },
   {

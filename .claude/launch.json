@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-ui-preview",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set PORT=4444&& bun run ui-web/server.ts"],
+      "port": 4444
+    }
+  ]
+}

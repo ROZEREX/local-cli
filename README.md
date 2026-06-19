@@ -185,7 +185,7 @@ bun run index.ts -b http://localhost:1234/v1   # e.g. LM Studio
 - `shift+tab` — cycle the mode (see below).
 - `esc` — interrupt a running response. `Ctrl+C` — quit.
 
-### Modes — `shift+tab` cycles `normal → plan → auto-accept`
+### Modes — `shift+tab` cycles `normal → plan → auto-accept → debug`
 
 - **normal** — mutating tools ask for permission, with a **diff preview** of
   exactly what `edit_file` / `write_file` will change.
@@ -194,6 +194,11 @@ bun run index.ts -b http://localhost:1234/v1   # e.g. LM Studio
   When the plan is ready: `a` approve & build, `k` keep refining, `esc` cancel.
 - **auto-accept** — mutating tools run without prompting. The status bar shows an
   `AUTO` badge so you always know it's on.
+- **debug** — select it, then describe the bug or what to verify. The agent runs
+  an evidence-driven loop: reproduce → gather live signals (`server_logs`,
+  `browser_console`, `browser_network`, `browser_performance`) → diagnose → fix →
+  re-verify, looping until it's resolved (still asks permission per change, like
+  normal). A `DEBUG` badge shows it's on. The same selector exists in the web UI.
 
 ### Sessions & context
 
@@ -229,6 +234,17 @@ bun run index.ts -b http://localhost:1234/v1   # e.g. LM Studio
 | `/config [key value]` | Show or set config (model, contextWindow, autoCompact, …) |
 | `/cwd [path]` | Show or change the working directory |
 | `/tokens` | Show token usage vs. the context window |
+| `/undo [n\|list]` | Revert the agent's last file change(s) — every mutation is snapshotted |
+| `/tasks [add\|done\|clean\|clear]` | Persistent project task list (`.local-cli/tasks.md`) |
+| `/memory [add\|forget\|clear]` | Persistent per-project agent memory (`.local-cli/memory.md`) |
+| `/index` | (Re)build the workspace code index (symbols, endpoints, chunks) |
+| `/search <query>` | Semantic code search — by meaning, not exact strings |
+| `/agents <t1> \| <t2>` | Spawn up to 4 read-only sub-agents that investigate in parallel and report back |
+| `/review` | Review the pending `git diff` like a senior engineer (read-only) |
+| `/benchmark` | Measure the current model's real load/prefill/generation speed |
+| `/export [file]` | Export the conversation to a markdown file |
+| `/theme [name]` | Switch the color theme: `tokyo`, `dark`, `light`, `mono` |
+| `/sandbox docker\|podman\|off` | Run `bash` commands inside a throwaway container |
 | `/clear` | Clear the conversation |
 | `/exit` | Quit |
 
@@ -261,6 +277,35 @@ tools need a vision-capable model (e.g. gemma3/4 vision, llava, qwen2.5-vl).
 
 **Memory:** `read_profile` / `update_profile` let the agent recall and persist
 your cross-project coding conventions on its own (see *Coding profiles* below).
+`remember` / `recall` do the same for facts about the *current project*
+(architecture decisions, gotchas, "never touch X") in `.local-cli/memory.md`,
+injected into every future session here. `task_add` / `task_done` / `task_list`
+maintain a persistent project checklist (`.local-cli/tasks.md`) so multi-session
+work survives restarts.
+
+**Semantic search:** `search_code` finds code by *meaning* ("where are JWT
+tokens generated") over a workspace index of symbols, endpoints, and chunks
+(`index_workspace` / `/index` rebuilds it). If an Ollama embedding model is
+installed (`ollama pull nomic-embed-text`) it uses real embeddings; otherwise it
+falls back to smart keyword scoring.
+
+**Sub-agents:** `spawn_agents` delegates 1–4 focused investigation/review tasks
+to headless sub-agents, each with a fresh context, that report back. Read-only
+unless explicitly granted write access.
+
+**Browser DevTools:** after `browser_open`, `browser_console` reads the JS
+console, `browser_network` lists requests with statuses (failures first), and
+`browser_performance` reports TTFB/FCP/LCP, heap, and DOM size — debugging
+without screenshots.
+
+**Safety nets:** every `write_file` / `edit_file` / `delete_file` is snapshotted
+to `.local-cli/history/` — `/undo` rolls back (great with auto mode). When a
+background server prints an error (`TypeError`, `Build failed`, `EADDRINUSE`…),
+it's injected into the agent's context automatically — no need to ask for logs.
+`edit_file` resolves near-miss matches itself: exact → whitespace-tolerant →
+similarity-based fuzzy matching. In the permission prompt, press `s` to apply
+only *some* hunks of a proposed diff. `/sandbox docker` runs `bash` commands in
+a disposable container with the project mounted at `/work`.
 
 Mutating tools (`write_file`, `edit_file`, `delete_file`, `bash`, `run_server`,
 `stop_server`, `update_profile`) prompt for permission — answer `y`, `N`, or `a`

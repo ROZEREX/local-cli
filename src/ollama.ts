@@ -44,6 +44,16 @@ export interface OllamaModelInfo {
   capabilities?: string[];  // e.g. ["completion","tools","thinking"]
 }
 
+// On-disk size (bytes) of an installed model, from /api/tags — a good proxy for
+// how much VRAM the weights need. Used by the model-switch fit warning.
+export async function modelDiskSize(baseUrl: string, model: string): Promise<number | undefined> {
+  try {
+    const models = await listOllamaModelsDetailed(baseUrl);
+    const base = model.split(":")[0]!;
+    return (models.find(m => m.name === model) ?? models.find(m => m.name.startsWith(base)))?.size;
+  } catch { return undefined; }
+}
+
 // Lightweight per-model summary from a single GET /api/tags call (no context
 // length — that needs /api/show per model). Good for list/picker hints.
 export async function listOllamaModelsDetailed(baseUrl: string): Promise<OllamaModelInfo[]> {
@@ -61,6 +71,20 @@ export async function listOllamaModelsDetailed(baseUrl: string): Promise<OllamaM
     }))
     .filter((m: OllamaModelInfo) => m.name)
     .sort((a: OllamaModelInfo, b: OllamaModelInfo) => a.name.localeCompare(b.name));
+}
+
+// Like listOllamaModelsDetailed, but also fills in each model's NATIVE context
+// length (one parallel /api/show per model — local Ollama answers these in
+// milliseconds). Used by the model picker and /models so the user can SEE the
+// context window they'd get before switching.
+export async function listOllamaModelsWithContext(baseUrl: string): Promise<OllamaModelInfo[]> {
+  const models = await listOllamaModelsDetailed(baseUrl);
+  await Promise.all(models.map(async (m) => {
+    const info = await modelInfo(baseUrl, m.name).catch(() => null);
+    if (info?.contextLength) m.contextLength = info.contextLength;
+    if (info?.capabilities?.length) m.capabilities = info.capabilities;
+  }));
+  return models;
 }
 
 // Full detail for ONE model via POST /api/show — adds native context length and
@@ -93,11 +117,94 @@ export async function modelInfo(baseUrl: string, model: string): Promise<OllamaM
   }
 }
 
-// Build a one-line hint like "7.6B · Q4_K_M · 4.5 GB" from a summary.
+// Build a one-line hint like "7.6B · Q4_K_M · 4.5 GB" from a summary. Flags
+// models with no tool support right in the picker so the user can see which
+// models can actually act as agents BEFORE switching to one.
 export function modelHint(m: OllamaModelInfo): string {
-  return [m.parameterSize, m.quantization, formatBytes(m.size), formatCtx(m.contextLength)]
-    .filter(Boolean)
-    .join(" · ");
+  const parts = [m.parameterSize, m.quantization, formatBytes(m.size), formatCtx(m.contextLength)].filter(Boolean);
+  if (m.capabilities && m.capabilities.length > 0 && !m.capabilities.includes("tools")) parts.push("⚠ no tools");
+  return parts.join(" · ");
+}
+
+// One-line agent-fitness verdict for a model, shown when the user switches to
+// it. A model without the "tools" capability can still chat, but it was never
+// tuned to act agentically — warn up front instead of letting the user discover
+// it mid-task (e.g. deepseek-coder-v2:lite is completion+insert only and will
+// lecture the user about fixes instead of editing files).
+export async function agentFitnessWarning(baseUrl: string, model: string): Promise<string | null> {
+  const info = await modelInfo(baseUrl, model).catch(() => null);
+  const caps = info?.capabilities ?? [];
+  if (caps.length === 0) return null; // unknown (non-Ollama / old Ollama) — stay quiet
+  if (caps.includes("tools")) return null;
+  const insertOnly = caps.includes("insert") && !caps.includes("thinking");
+  return (
+    `⚠ "${model}" has no native tool support (capabilities: ${caps.join(", ")}). ` +
+    (insertOnly
+      ? "It's a code-completion model, not an agent — expect it to print advice and code snippets instead of editing files, starting servers, or running commands. "
+      : "Agentic use falls back to prompted tool-calling, which is unreliable for models not tuned for it. ") +
+    "It's fine for questions and autocomplete; for real coding tasks switch to a tools-capable model (e.g. qwen2.5-coder — check /models for the ⚠ no tools flag)."
+  );
+}
+
+// Models currently LOADED in Ollama's memory (GET /api/ps). size_vram tells how
+// much of the model sits on the GPU — when it's less than size, the rest spilled
+// into system RAM and generation slows down. Powers the VRAM warnings + the
+// "loaded models" panel.
+export interface LoadedModel {
+  name: string;
+  size?: number;       // total bytes the loaded model occupies
+  sizeVram?: number;   // bytes of that on the GPU
+  expiresAt?: string;  // when Ollama will unload it (keep_alive)
+  contextLength?: number;
+}
+
+export async function loadedModels(baseUrl: string): Promise<LoadedModel[]> {
+  const host = ollamaHost(baseUrl);
+  try {
+    const res = await fetch(`${host}/api/ps`, { signal: AbortSignal.timeout(2500) });
+    if (!res.ok) return [];
+    const data: any = await res.json();
+    return (data.models ?? [])
+      .map((m: any): LoadedModel => ({
+        name: m.name ?? m.model ?? "",
+        size: typeof m.size === "number" ? m.size : undefined,
+        sizeVram: typeof m.size_vram === "number" ? m.size_vram : undefined,
+        expiresAt: m.expires_at,
+        contextLength: typeof m.context_length === "number" ? m.context_length : undefined,
+      }))
+      .filter((m: LoadedModel) => m.name);
+  } catch {
+    return [];
+  }
+}
+
+// Render `ollama ps` for the /ps command: one line per resident model with its
+// VRAM residency (and a flag when part of it spilled to system RAM, which slows
+// generation) and how long until Ollama unloads it. `now` is injectable so the
+// relative expiry is testable.
+export function formatLoadedModels(models: LoadedModel[], currentModel: string, now = Date.now()): string {
+  if (models.length === 0) return "No models are currently resident in Ollama. The model loads on the first message (or run /benchmark to warm it).";
+  const gb = (n?: number) => (typeof n === "number" ? (n / 1e9).toFixed(1) + " GB" : "?");
+  const expiry = (iso?: string): string => {
+    if (!iso) return "";
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return "";
+    const mins = Math.round((t - now) / 60000);
+    if (mins <= 0) return "expiring now";
+    if (mins >= 525600) return "no expiry";          // keep_alive -1 → far-future date
+    if (mins >= 60) return `expires in ${Math.floor(mins / 60)}h${mins % 60 ? ` ${mins % 60}m` : ""}`;
+    return `expires in ${mins}m`;
+  };
+  const lines = ["Loaded models (ollama ps):"];
+  for (const m of models) {
+    const here = m.name === currentModel || m.name.startsWith(currentModel.split(":")[0]!);
+    const pct = m.size && m.sizeVram !== undefined ? Math.round((m.sizeVram / m.size) * 100) : null;
+    const gpu = pct === null ? "" : pct >= 100 ? "100% on GPU" : `${pct}% on GPU ⚠ rest in RAM (slow)`;
+    const ctx = m.contextLength ? `ctx ${m.contextLength}` : "";
+    const exp = expiry(m.expiresAt);
+    lines.push(`  ${here ? "▸" : " "} ${m.name}   ${gb(m.size)}   ${[gpu, ctx, exp].filter(Boolean).join("   ")}`);
+  }
+  return lines.join("\n");
 }
 
 // Detect native tool support for a model. Returns true/false, or null when it
@@ -147,10 +254,18 @@ export async function modelCapabilities(baseUrl: string, model: string): Promise
 }
 
 export async function isOllama(baseUrl: string): Promise<boolean> {
+  const host = ollamaHost(baseUrl);
+  if (host.includes("11434") || host.toLowerCase().includes("ollama")) {
+    return true;
+  }
   try {
-    const res = await fetch(`${ollamaHost(baseUrl)}/api/version`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`${host}/api/version`, { signal: AbortSignal.timeout(3000) });
     return res.ok;
-  } catch {
+  } catch (err: any) {
+    if (err?.name === "AbortError" || /fetch failed/i.test(err?.message)) {
+      throw err;
+    }
     return false;
   }
 }
+

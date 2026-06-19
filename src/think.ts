@@ -252,3 +252,72 @@ export class ThinkSplitter {
     return this.inner.flush().map(s => ({ text: s.text, think: s.inside }));
   }
 }
+
+export function normalizeArgs(args: any): string {
+  if (args === null || args === undefined) return "";
+  if (typeof args !== "object") return String(args);
+  
+  const sortObj = (obj: any): any => {
+    if (Array.isArray(obj)) {
+      return obj.map(sortObj);
+    }
+    if (obj !== null && typeof obj === "object") {
+      const sorted: any = {};
+      const keys = Object.keys(obj).sort();
+      for (const k of keys) {
+        sorted[k] = sortObj(obj[k]);
+      }
+      return sorted;
+    }
+    return obj;
+  };
+  
+  return JSON.stringify(sortObj(args));
+}
+
+export function hashString(s: string): string {
+  let hash = 5381;
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash * 33) ^ s.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+export class ToolLoopGuard {
+  private history: string[] = [];
+
+  constructor(private reps = 3) {}
+
+  record(name: string, args: any, result: string): boolean {
+    const argsStr = normalizeArgs(args);
+    const resHash = hashString(result);
+    const sig = `${name}|${argsStr}|${resHash}`;
+    this.history.push(sig);
+    return this.detect();
+  }
+
+  private detect(): boolean {
+    const H = this.history;
+    const n = H.length;
+    const maxCycle = Math.min(20, Math.floor(n / this.reps));
+    for (let c = 1; c <= maxCycle; c++) {
+      let copies = 1;
+      while ((copies + 1) * c <= n) {
+        let same = true;
+        for (let i = 0; i < c; i++) {
+          if (H[n - 1 - i] !== H[n - 1 - i - copies * c]) {
+            same = false;
+            break;
+          }
+        }
+        if (!same) break;
+        copies++;
+      }
+      if (copies >= this.reps) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+

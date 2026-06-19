@@ -226,7 +226,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "browser_read",
-      description: "Read the visible text of the current browser page, plus any console errors. Use this to verify a page rendered or to read error messages.",
+      description: "Read the visible text of the current browser page, plus its interactive elements (links/buttons/inputs you can use with browser_click and browser_type) and any console errors. Use this to verify a page rendered or to read error messages.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -236,6 +236,33 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
       name: "browser_click",
       description: "Click an element in the current browser page by CSS selector or visible text (e.g. a button or link), to interact with the app.",
       parameters: { type: "object", properties: { target: { type: "string", description: "CSS selector or visible text of the element to click" } }, required: ["target"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_type",
+      description: "Type text into an input or textarea in the controlled browser by CSS selector or label text.",
+      parameters: {
+        type: "object",
+        properties: {
+          target: { type: "string", description: "CSS selector, placeholder, or label of the input element" },
+          text: { type: "string", description: "The text to type" }
+        },
+        required: ["target", "text"]
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_scroll",
+      description: "Scroll the controlled browser page (down/up/top/bottom) to reveal more content before reading or screenshotting it.",
+      parameters: {
+        type: "object",
+        properties: { to: { type: "string", enum: ["down", "up", "top", "bottom"], description: "Where to scroll (default: down)" } },
+        required: [],
+      },
     },
   },
   {
@@ -305,6 +332,21 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "page_type",
+      description: "Type text into an input or textarea element on the user's live page. Animates the AI cursor to it, highlights it, and fills it.",
+      parameters: {
+        type: "object",
+        properties: {
+          target: { type: "string", description: "Visible text, placeholder, name, or CSS selector of the input field" },
+          text: { type: "string", description: "The text to type" }
+        },
+        required: ["target", "text"]
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "page_highlight",
       description: "Highlight element(s) on the user's live page (visual emphasis, no click) so you can point at what you're referring to.",
       parameters: { type: "object", properties: { target: { type: "string", description: "Visible text or CSS selector" } }, required: ["target"] },
@@ -338,6 +380,122 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
         },
         required: [],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_code",
+      description: "SEMANTIC search over the workspace index — finds code by MEANING, not exact strings (e.g. 'where are JWT tokens generated', 'login form validation'). Returns ranked file:line results with snippets. Use grep_files instead when you know the exact text.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Natural-language description of the code you're looking for" },
+          limit: { type: "number", description: "Max results (default 8)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "index_workspace",
+      description: "(Re)build the workspace code index used by search_code: scans source files and extracts functions, classes, components, and endpoints. Run it after large refactors or when search_code results look stale.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remember",
+      description: "Save durable fact(s) about THIS PROJECT to its persistent memory (.local-cli/memory.md) so they survive into future sessions — e.g. 'Backend uses NestJS', 'Never modify migrations manually', architecture decisions, gotchas. Use update_profile instead for the user's cross-project style.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: { type: "string", description: "The fact(s) to remember, as short markdown bullets" },
+        },
+        required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "recall",
+      description: "Read this project's persistent memory (facts learned in past sessions). The memory is also injected into your context automatically — use this only to double-check it explicitly.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_add",
+      description: "Add a task to the project's persistent task list (.local-cli/tasks.md). Use it to record multi-session work items ('Fix login bug', 'Add OAuth support') so they survive across sessions.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string", description: "The task description" } },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_done",
+      description: "Mark a task in the project task list as completed, by number or by part of its text. Only mark tasks you have actually finished.",
+      parameters: {
+        type: "object",
+        properties: { task: { type: "string", description: "Task number or a fragment of its text" } },
+        required: ["task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_list",
+      description: "Show the project's persistent task list (open and completed items).",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "spawn_agents",
+      description: "Spawn 1-4 focused SUB-AGENTS that each work on one task with a fresh context and report back (e.g. 'Investigate the login bug' + 'Review error handling in src/api'). Read-only by default; set allow_writes only when a sub-agent must edit files. Use for parallelizable investigation/review work — NOT for simple single-step jobs you can do directly.",
+      parameters: {
+        type: "object",
+        properties: {
+          tasks: { type: "array", items: { type: "string" }, description: "One self-contained task per agent (1-4)" },
+          allow_writes: { type: "boolean", description: "Allow the sub-agents to modify files (default false = investigate only)" },
+        },
+        required: ["tasks"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_console",
+      description: "Read the controlled browser's console output (logs, warnings, errors) captured since the last navigation — like the DevTools Console tab. Use after browser_open to check for JS errors.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_network",
+      description: "List the network requests the current page made (method, URL, status), with failed and 4xx/5xx requests grouped first — like the DevTools Network tab. Use to debug missing assets and failing API calls.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_performance",
+      description: "Read the current page's performance metrics — TTFB, FCP, LCP, DOMContentLoaded/load times, JS heap, DOM node count, transfer size — like the DevTools Performance panel. Use to diagnose slow pages.",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
   {

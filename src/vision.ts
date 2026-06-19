@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync } from "fs";
 import { platform, tmpdir } from "os";
 import { join } from "path";
 import { getConfig } from "./config";
-import { modelCapabilities } from "./ollama";
+import { modelCapabilities, listOllamaModelsDetailed, modelInfo, isOllama } from "./ollama";
 
 // "See" the screen: capture an image and have a vision-capable model describe or
 // analyze it. Powers the screenshot tool (desktop) and browser_screenshot's
@@ -38,31 +38,114 @@ export function captureDesktop(): string {
   }
 }
 
-// Send an image (base64 PNG) + a question to the vision model via Ollama's native
-// /api/chat (which accepts `images`). Returns the model's description.
+// Send an image (base64 PNG) + a question to the vision model. Supports Ollama's native
+// /api/chat or standard OpenAI-compatible /v1/chat/completions. Returns description.
 export async function analyzeImage(base64: string, question: string): Promise<string> {
   const cfg = getConfig();
   const host = cfg.baseUrl.replace(/\/v1\/?$/, "").replace(/\/+$/, "");
-  const caps = await modelCapabilities(cfg.baseUrl, cfg.model);
-  if (caps.length && !caps.includes("vision")) {
-    return `The current model (${cfg.model}) can't see images (no "vision" capability). Switch to a vision model — e.g. one whose /modelinfo lists "vision", such as llava, a gemma3/4 vision build, or qwen2.5-vl — then try again.`;
-  }
-  try {
-    const res = await fetch(`${host}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: cfg.model,
-        stream: false,
-        messages: [{ role: "user", content: question || "Describe what is shown in detail. Note any errors, broken layout, or problems.", images: [base64] }],
-        options: { temperature: 0.2 },
-      }),
-      signal: AbortSignal.timeout(120000),
-    });
-    if (!res.ok) return `Vision request failed (${res.status}). Make sure the model supports images.`;
-    const data: any = await res.json();
-    return (data.message?.content || "").trim() || "(the model returned no description)";
-  } catch (e: any) {
-    return `Vision request error: ${e.message}`;
+  const isOll = await isOllama(cfg.baseUrl).catch(() => false);
+
+  const isExplicitVisionModel = (name: string) => /vl|llava|vision|minicpm|paligemma|internvl|mplug/i.test(name);
+
+  let visionModel = cfg.model;
+  let activeHasVision = false;
+
+  if (isOll) {
+    // 1. First check if the active model itself is explicitly a vision model or has capability
+    activeHasVision = isExplicitVisionModel(cfg.model);
+    if (!activeHasVision) {
+      try {
+        const activeCaps = await modelCapabilities(cfg.baseUrl, cfg.model);
+        if (activeCaps.includes("vision")) {
+          activeHasVision = true;
+        }
+      } catch {}
+    }
+
+    // 2. If active model is not vision, look for an installed model that is
+    if (!activeHasVision) {
+      try {
+        const installed = await listOllamaModelsDetailed(cfg.baseUrl).catch(() => []);
+        // Match by name first
+        for (const m of installed) {
+          if (isExplicitVisionModel(m.name)) {
+            visionModel = m.name;
+            activeHasVision = true;
+            break;
+          }
+        }
+        // Match by capability if name didn't match
+        if (!activeHasVision) {
+          for (const m of installed) {
+            const info = await modelInfo(cfg.baseUrl, m.name).catch(() => null);
+            if (info?.capabilities?.includes("vision")) {
+              visionModel = m.name;
+              activeHasVision = true;
+              break;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (!activeHasVision) {
+      return `The current model (${cfg.model}) does not support vision. Please pull a vision model (e.g. 'ollama pull qwen2.5-vl' or 'ollama pull llava') so the agent can see screenshots and layout styling.`;
+    }
+
+    try {
+      const res = await fetch(`${host}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: visionModel,
+          stream: false,
+          messages: [{ role: "user", content: question || "Describe what is shown in detail. Note any errors, broken layout, or problems.", images: [base64] }],
+          options: { temperature: 0.2 },
+        }),
+        signal: AbortSignal.timeout(300000),
+      });
+      if (!res.ok) return `Vision request failed (${res.status}) on model "${visionModel}".`;
+      const data: any = await res.json();
+      const desc = (data.message?.content || "").trim();
+      if (visionModel !== cfg.model) {
+        return `[Analyzed using visual fallback model "${visionModel}"]: \n\n${desc}`;
+      }
+      return desc || "(the model returned no description)";
+    } catch (e: any) {
+      return `Vision request error: ${e.message}`;
+    }
+  } else {
+    // Non-Ollama endpoint (OpenAI, Gemini, OpenRouter) - assume the active model has vision
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (cfg.apiKey && cfg.apiKey !== "ollama" && cfg.apiKey !== "test") {
+        headers["Authorization"] = `Bearer ${cfg.apiKey}`;
+      }
+      const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: visionModel,
+          stream: false,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: question || "Describe what is shown in detail. Note any errors, broken layout, or problems." },
+                { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }
+              ]
+            }
+          ],
+          temperature: 0.2,
+        }),
+        signal: AbortSignal.timeout(300000),
+      });
+      if (!res.ok) return `Vision request failed (${res.status}) on model "${visionModel}".`;
+      const data: any = await res.json();
+      const desc = (data.choices?.[0]?.message?.content || "").trim();
+      return desc || "(the model returned no description)";
+    } catch (e: any) {
+      return `Vision request error: ${e.message}`;
+    }
   }
 }

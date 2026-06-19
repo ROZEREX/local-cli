@@ -5,7 +5,7 @@ import { spawnSync } from "child_process";
 import { getConfig } from "../config";
 import { startServer, serverLogs, stopServer, listServers, getServer, waitForStartup } from "../proc";
 import { listListeningPorts, killPort } from "../ports";
-import { browserOpen, browserReadText, browserClick, browserScreenshot, browserConsole, browserClose } from "../browser";
+import { browserOpen, browserReadText, browserClick, browserType, browserScroll, browserElements, browserScreenshot, browserConsole, browserClose } from "../browser";
 import { captureDesktop, analyzeImage } from "../vision";
 import { systemInfo, recommendModels, describeSystem } from "../sysinfo";
 import { sendCommand, extensionConnected } from "../extbridge";
@@ -13,6 +13,12 @@ import {
   readActiveProfile, getActiveProfileName, readProfileByName, writeProfileByName,
   setActiveProfile, listProfileNames,
 } from "../profile";
+import { recordFileChange } from "../history";
+import { readMemory, addMemory } from "../memory";
+import { addTask, completeTask, describeTasks } from "../tasks";
+import { searchCode, formatSearchResults, ensureIndex } from "../search";
+import { describeIndex } from "../indexer";
+import { browserNetwork, browserPerformance } from "../browser";
 
 function resolvePath(p: string): string {
   if (!p) return getConfig().cwd;
@@ -51,7 +57,9 @@ export function writeFile(args: { path: string; content: string }): string {
   try {
     const dir = dirname(fp);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const before = existsSync(fp) ? readFileSync(fp, "utf-8") : null;
     writeFileSync(fp, args.content, "utf-8");
+    recordFileChange("write_file", fp, before, args.content);
     return `Written ${args.content.length} chars to ${relative(getConfig().cwd, fp)}`;
   } catch (e: any) {
     return `Error writing file: ${e.message}`;
@@ -108,6 +116,60 @@ function fuzzyReplaceLines(
   return { error: "" };
 }
 
+// Dice bigram similarity of two strings (0..1) — cheap and word-order tolerant.
+function diceSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
+  const bigrams = (s: string) => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const bg = s.slice(i, i + 2);
+      m.set(bg, (m.get(bg) ?? 0) + 1);
+    }
+    return m;
+  };
+  const ma = bigrams(a), mb = bigrams(b);
+  let overlap = 0;
+  for (const [bg, ca] of ma) overlap += Math.min(ca, mb.get(bg) ?? 0);
+  return (2 * overlap) / (a.length - 1 + b.length - 1);
+}
+
+// Last-resort fuzzy stage: find the file block MOST SIMILAR to the search text
+// (per-line Dice similarity, whitespace-collapsed) and replace it — handles
+// models that paraphrase a comment, drop a trailing comma, or slightly misquote
+// a line. Only applies when there's a single clearly-best confident match.
+const FUZZY_THRESHOLD = 0.88;
+const FUZZY_MARGIN = 0.04;
+
+function fuzzyBlockReplace(
+  content: string,
+  oldStr: string,
+  newStr: string
+): { updated: string; score: number } | { error: string } | null {
+  const fileLines = content.split("\n");
+  const searchLines = oldStr.split("\n");
+  if (searchLines.length === 0 || fileLines.length < searchLines.length) return null;
+  const norm = (l: string) => l.replace(/\s+/g, " ").trim();
+  const fn = fileLines.map(norm);
+  const sn = searchLines.map(norm);
+
+  let best = -1, bestScore = 0, secondScore = 0;
+  for (let i = 0; i + sn.length <= fn.length; i++) {
+    let sum = 0;
+    for (let j = 0; j < sn.length; j++) sum += diceSimilarity(fn[i + j]!, sn[j]!);
+    const score = sum / sn.length;
+    if (score > bestScore) { secondScore = bestScore; bestScore = score; best = i; }
+    else if (score > secondScore) secondScore = score;
+  }
+  if (best === -1 || bestScore < FUZZY_THRESHOLD) return null;
+  if (secondScore > bestScore - FUZZY_MARGIN) {
+    return { error: `old_string matches multiple locations about equally well (similarity ${(bestScore * 100).toFixed(0)}%). Add more surrounding context to disambiguate.` };
+  }
+  const result = fileLines.slice();
+  result.splice(best, sn.length, ...newStr.split("\n"));
+  return { updated: result.join("\n"), score: bestScore };
+}
+
 // ─── edit_file ────────────────────────────────────────────────────────────────
 export function editFile(args: { path: string; old_string: string; new_string: string; replace_all?: boolean }): string {
   if (!args.path) return "Error: edit_file needs a 'path' (the file to change). Call it again with path, old_string (exact text to find), and new_string.";
@@ -128,7 +190,11 @@ export function editFile(args: { path: string; old_string: string; new_string: s
     const newStr = args.new_string.replace(/\r\n/g, "\n");
     if (!oldStr.trim()) return "Error: old_string (search) is empty.";
     const rel = relative(getConfig().cwd, fp);
-    const write = (text: string) => writeFileSync(fp, text.replace(/\n/g, eol), "utf-8");
+    const write = (text: string) => {
+      const final = text.replace(/\n/g, eol);
+      writeFileSync(fp, final, "utf-8");
+      recordFileChange("edit_file", fp, raw, final);
+    };
 
     // 1. Exact substring match (handles partial-line edits).
     const occ = content.split(oldStr).length - 1;
@@ -143,9 +209,17 @@ export function editFile(args: { path: string; old_string: string; new_string: s
     // 2. Whitespace-tolerant line match (handles indentation/trailing-ws/CRLF drift).
     const res = fuzzyReplaceLines(content, oldStr, newStr, !!args.replace_all);
     if ("error" in res) {
-      return res.error
-        ? `Error: ${res.error}`
-        : `Error: old_string not found in ${args.path}. Read the file again and copy the exact text (including indentation) to replace.`;
+      if (res.error) return `Error: ${res.error}`;
+      // 3. Similarity match (handles slightly-misquoted lines) — single edits only.
+      if (!args.replace_all) {
+        const fz = fuzzyBlockReplace(content, oldStr, newStr);
+        if (fz && "error" in fz) return `Error: ${fz.error}`;
+        if (fz) {
+          write(fz.updated);
+          return `Edited ${rel} (fuzzy match, ${(fz.score * 100).toFixed(0)}% similar — verify with read_file that the result is what you intended)`;
+        }
+      }
+      return `Error: old_string not found in ${args.path}. Read the file again and copy the exact text (including indentation) to replace.`;
     }
     write(res.updated);
     return `Edited ${rel} (replaced ${res.count} occurrence${res.count > 1 ? "s" : ""}, whitespace-tolerant match)`;
@@ -158,7 +232,11 @@ export function editFile(args: { path: string; old_string: string; new_string: s
 export async function globFiles(args: { pattern: string; cwd?: string }): Promise<string> {
   const cwd = args.cwd ? resolvePath(args.cwd) : getConfig().cwd;
   try {
-    const matches = await glob(args.pattern, { cwd, nodir: false });
+    const matches = await glob(args.pattern, {
+      cwd,
+      nodir: false,
+      ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**", "**/build/**"]
+    });
     if (matches.length === 0) return "No files matched.";
     return matches.sort().join("\n");
   } catch (e: any) {
@@ -190,7 +268,12 @@ export async function grepFiles(args: {
     files = [searchPath];
   } else {
     const pattern = args.glob || "**/*";
-    files = (await glob(pattern, { cwd: searchPath, nodir: true, absolute: true }));
+    files = await glob(pattern, {
+      cwd: searchPath,
+      nodir: true,
+      absolute: true,
+      ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**", "**/build/**"]
+    });
   }
 
   const results: string[] = [];
@@ -247,9 +330,20 @@ export function bashExec(args: { command: string; cwd?: string; timeout?: number
   const cwd = args.cwd ? resolvePath(args.cwd) : getConfig().cwd;
   const timeout = args.timeout ?? defaultBashTimeout(args.command);
   try {
+    const cfg = getConfig();
     const isWin = process.platform === "win32";
-    const shell = isWin ? "powershell.exe" : "bash";
-    const shellArgs = isWin ? ["-NoProfile", "-NonInteractive", "-Command", args.command] : ["-c", args.command];
+    let shell: string;
+    let shellArgs: string[];
+    if (cfg.sandbox === "docker" || cfg.sandbox === "podman") {
+      // Sandboxed execution: run the command inside a throwaway container with
+      // the project mounted at /work. The engine is invoked directly (no host
+      // shell) so nested quoting can't break out.
+      shell = cfg.sandbox;
+      shellArgs = ["run", "--rm", "-v", `${cwd}:/work`, "-w", "/work", cfg.sandboxImage, "sh", "-lc", args.command];
+    } else {
+      shell = isWin ? "powershell.exe" : "bash";
+      shellArgs = isWin ? ["-NoProfile", "-NonInteractive", "-Command", args.command] : ["-c", args.command];
+    }
 
     const result = spawnSync(shell, shellArgs, {
       cwd,
@@ -257,6 +351,10 @@ export function bashExec(args: { command: string; cwd?: string; timeout?: number
       encoding: "utf-8",
       maxBuffer: 10 * 1024 * 1024,
     });
+
+    if (result.error && (result.error as any).code === "ENOENT" && cfg.sandbox !== "none") {
+      return `Error: sandbox is set to "${cfg.sandbox}" but the ${cfg.sandbox} binary was not found. Install it, or disable the sandbox with /sandbox off.`;
+    }
 
     // Timeout: spawnSync sets error.code ETIMEDOUT (and SIGTERM). Make it clear
     // rather than surfacing the raw "spawnSync powershell.exe ETIMEDOUT".
@@ -273,6 +371,31 @@ export function bashExec(args: { command: string; cwd?: string; timeout?: number
 
     const out = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
     const exit = result.status ?? 0;
+    if (exit !== 0 && isWin) {
+      const hints: string[] = [];
+      const cmd = args.command;
+      if (cmd.includes("rm ") && (cmd.includes("-r") || cmd.includes("-f"))) {
+        hints.push("On Windows PowerShell, UNIX-style 'rm -rf' or 'rm -r' is not supported because 'rm' is an alias for 'Remove-Item'. Use 'Remove-Item -Recurse -Force <path>' instead.");
+      }
+      if (cmd.includes("mkdir ") && cmd.includes("-p")) {
+        hints.push("On Windows PowerShell, 'mkdir -p' is not supported. Use 'New-Item -ItemType Directory <path>' instead.");
+      }
+      if (cmd.includes("&&")) {
+        hints.push("On Windows PowerShell, '&&' is not supported. Use ';' to separate multiple commands.");
+      }
+      if (/\btouch\b/.test(cmd)) {
+        hints.push("On Windows, 'touch' is not supported. Use 'New-Item <file>' or 'echo $null > <file>' instead.");
+      }
+      if (cmd.includes("ls ") && (cmd.includes("-l") || cmd.includes("-a"))) {
+        hints.push("On Windows PowerShell, 'ls' aliases to 'Get-ChildItem' which does not support UNIX flags like '-la' or '-lh'. Use Get-ChildItem without those flags instead.");
+      }
+      if (cmd.includes("cp ") && (cmd.includes("-r") || cmd.includes("-R"))) {
+        hints.push("On Windows PowerShell, UNIX-style 'cp -r' is not supported. Use 'Copy-Item -Recurse' instead.");
+      }
+      if (hints.length > 0) {
+        return `Exit ${exit}:\n${out || "(no output)"}\n\n[Windows PowerShell Tips:\n${hints.map(h => `- ${h}`).join("\n")}]`;
+      }
+    }
     return exit === 0
       ? out || "(no output)"
       : `Exit ${exit}:\n${out || "(no output)"}`;
@@ -288,7 +411,10 @@ export function deleteFile(args: { path: string }): string {
   if (!existsSync(fp)) return `Error: File not found: ${fp}`;
   if (statSync(fp).isDirectory()) return `Error: Path is a directory. Use bash command to remove directories if needed.`;
   try {
+    let before: string | null = null;
+    try { before = readFileSync(fp, "utf-8"); } catch { /* binary or unreadable — skip history */ }
     unlinkSync(fp);
+    if (before !== null) recordFileChange("delete_file", fp, before, null);
     return `Deleted ${relative(getConfig().cwd, fp)}`;
   } catch (e: any) {
     return `Error deleting file: ${e.message}`;
@@ -411,14 +537,27 @@ export async function browserOpenTool(args: { url?: string }): Promise<string> {
 export async function browserReadTool(): Promise<string> {
   try {
     const text = await browserReadText();
+    const els = await browserElements().catch(() => "");
     const errs = await browserConsole().catch(() => "");
-    return `Page text:\n${text || "(empty)"}${errs ? `\n\nConsole errors:\n${errs}` : ""}`;
+    return `Page text:\n${text || "(empty)"}` +
+      (els ? `\n\nInteractive elements (use the text or a selector with browser_click / browser_type):\n${els}` : "") +
+      (errs ? `\n\nConsole errors:\n${errs}` : "");
   } catch (e: any) { return `Error reading page: ${e.message}`; }
 }
 export async function browserClickTool(args: { target?: string; selector?: string; text?: string }): Promise<string> {
   const target = args.target || args.selector || args.text;
   if (!target) return "Error: provide a CSS selector or visible text to click (target).";
   try { return await browserClick(target); } catch (e: any) { return `Error clicking: ${e.message}`; }
+}
+export async function browserTypeTool(args: { target?: string; selector?: string; text?: string }): Promise<string> {
+  const target = args.target || args.selector;
+  const text = args.text;
+  if (!target) return "Error: provide a CSS selector, placeholder, or label text (target).";
+  if (text === undefined || text === null) return "Error: text is required.";
+  try { return await browserType(target, text); } catch (e: any) { return `Error typing: ${e.message}`; }
+}
+export async function browserScrollTool(args: { to?: string }): Promise<string> {
+  try { return await browserScroll(args.to || "down"); } catch (e: any) { return `Error scrolling: ${e.message}`; }
 }
 export async function browserScreenshotTool(args: { question?: string }): Promise<string> {
   try {
@@ -468,6 +607,15 @@ export async function pageClickTool(args: { target?: string }): Promise<string> 
     return r.ok ? `Moved the cursor to and clicked: "${r.label}".` : `Couldn't find an element matching "${args.target}" to click.`;
   } catch (e: any) { return `Error clicking: ${e.message}`; }
 }
+export async function pageTypeTool(args: { target?: string; text?: string }): Promise<string> {
+  if (!extensionConnected()) return NO_EXT;
+  if (!args.target) return "Error: target (visible text, placeholder, or CSS selector) is required.";
+  if (args.text === undefined || args.text === null) return "Error: text is required.";
+  try {
+    const r = await sendCommand("type", { target: args.target, text: args.text });
+    return r.ok ? `Moved the cursor to and typed into: "${r.label}".` : `Couldn't find an element matching "${args.target}" to type into.`;
+  } catch (e: any) { return `Error typing: ${e.message}`; }
+}
 export async function pageHighlightTool(args: { target?: string }): Promise<string> {
   if (!extensionConnected()) return NO_EXT;
   if (!args.target) return "Error: target is required.";
@@ -502,6 +650,92 @@ export async function pageNavigateTool(args: { url?: string }): Promise<string> 
 export function systemInfoTool(): string {
   const info = systemInfo();
   return describeSystem(info, recommendModels(info));
+}
+
+// ─── search_code (semantic workspace search) ──────────────────────────────────
+export async function searchCodeTool(args: { query?: string; limit?: number }): Promise<string> {
+  const query = (args.query ?? "").trim();
+  if (!query) return "Error: a query is required (e.g. search_code query=\"where are JWT tokens generated\").";
+  try {
+    const r = await searchCode(query, Math.min(Math.max(args.limit ?? 8, 1), 20));
+    return formatSearchResults(query, r);
+  } catch (e: any) {
+    return `Error searching code: ${e.message}. Try grep_files for an exact-string search.`;
+  }
+}
+
+// ─── index_workspace ──────────────────────────────────────────────────────────
+export async function indexWorkspaceTool(): Promise<string> {
+  try {
+    const idx = await ensureIndex({ rebuild: true });
+    return describeIndex(idx);
+  } catch (e: any) {
+    return `Error indexing workspace: ${e.message}`;
+  }
+}
+
+// ─── remember / recall (per-project agent memory) ─────────────────────────────
+export function rememberTool(args: { content?: string; fact?: string; text?: string }): string {
+  const content = (args.content ?? args.fact ?? args.text ?? "").trim();
+  if (!content) return "Error: provide the fact(s) to remember in 'content' (short markdown bullets).";
+  const { added, skipped } = addMemory(content);
+  if (added === 0) return "Already in project memory — nothing new to add.";
+  return `Remembered ${added} fact${added === 1 ? "" : "s"} in this project's memory (.local-cli/memory.md)${skipped ? `, ${skipped} duplicate(s) skipped` : ""}. It will be available in every future session here.`;
+}
+
+export function recallTool(): string {
+  const mem = readMemory();
+  if (!mem) return "Project memory is empty. Save durable facts about this project with the remember tool.";
+  return `Project memory (.local-cli/memory.md):\n\n${mem}`;
+}
+
+// ─── task tools (persistent per-project checklist) ────────────────────────────
+export function taskAddTool(args: { text?: string; task?: string; content?: string }): string {
+  const text = (args.text ?? args.task ?? args.content ?? "").trim();
+  if (!text) return "Error: provide the task text (e.g. task_add text=\"Add OAuth support\").";
+  addTask(text);
+  return `Added task: "${text}".\n\n${describeTasks()}`;
+}
+
+export function taskDoneTool(args: { task?: string; text?: string; index?: number | string }): string {
+  const ref = args.index ?? args.task ?? args.text;
+  if (ref === undefined || ref === null || String(ref).trim() === "") {
+    return "Error: identify the task to complete by its number or part of its text.";
+  }
+  const r = completeTask(typeof ref === "number" ? ref : String(ref).trim());
+  if (!r.ok) return `No task matched "${ref}". Current list:\n${describeTasks()}`;
+  return `Marked done: "${r.task!.text}".\n\n${describeTasks()}`;
+}
+
+export function taskListTool(): string {
+  return describeTasks();
+}
+
+// ─── spawn_agents (multi-agent mode) ──────────────────────────────────────────
+export async function spawnAgentsTool(args: { tasks?: string[] | string; allow_writes?: boolean }): Promise<string> {
+  let tasks: string[] = Array.isArray(args.tasks)
+    ? args.tasks.map(t => String(t)).filter(t => t.trim())
+    : typeof args.tasks === "string"
+      ? args.tasks.split(/\||\n/).map(t => t.trim()).filter(Boolean)
+      : [];
+  if (tasks.length === 0) return "Error: provide 1-4 tasks (array, or one per line / separated by |).";
+  const { runSubAgents, formatAgentResults } = await import("../agents");
+  const results = await runSubAgents(tasks, { allowWrites: !!args.allow_writes });
+  return formatAgentResults(results);
+}
+
+// ─── browser devtools ─────────────────────────────────────────────────────────
+export async function browserConsoleTool(): Promise<string> {
+  try {
+    const logs = await browserConsole();
+    return logs ? `Browser console:\n${logs.split("\n").slice(-80).join("\n")}` : "Browser console is empty (no logs since the last navigation).";
+  } catch (e: any) { return `Error reading console: ${e.message}`; }
+}
+export async function browserNetworkTool(): Promise<string> {
+  try { return await browserNetwork(); } catch (e: any) { return `Error reading network: ${e.message}`; }
+}
+export async function browserPerformanceTool(): Promise<string> {
+  try { return await browserPerformance(); } catch (e: any) { return `Error reading performance: ${e.message}`; }
 }
 
 // Normalize common arg-name variations models emit, so a slightly-off tool call
@@ -554,6 +788,21 @@ const TOOL_ALIASES: Record<string, string> = {
   kill_server: "stop_server",
   // server_logs
   logs: "server_logs", get_logs: "server_logs", tail_logs: "server_logs",
+  // search_code
+  semantic_search: "search_code", code_search: "search_code", searchcode: "search_code",
+  // memory
+  save_memory: "remember", memorize: "remember", add_memory: "remember",
+  read_memory: "recall", get_memory: "recall", recall_memory: "recall",
+  // tasks
+  add_task: "task_add", create_task: "task_add", todo_add: "task_add",
+  complete_task: "task_done", finish_task: "task_done", mark_done: "task_done",
+  list_tasks: "task_list", tasks: "task_list", todo_list: "task_list",
+  // index
+  index_project: "index_workspace", build_index: "index_workspace", reindex: "index_workspace",
+  // agents
+  spawn_agent: "spawn_agents", sub_agents: "spawn_agents", run_agents: "spawn_agents",
+  // browser devtools
+  console_logs: "browser_console", network_requests: "browser_network",
 };
 
 export function canonicalToolName(name: string): string {
@@ -584,6 +833,8 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "browser_open": return await browserOpenTool(args);
     case "browser_read": return await browserReadTool();
     case "browser_click": return await browserClickTool(args);
+    case "browser_type": return await browserTypeTool(args);
+    case "browser_scroll": return await browserScrollTool(args);
     case "browser_screenshot": return await browserScreenshotTool(args);
     case "browser_close": return await browserCloseTool();
     case "screenshot": return await screenshotTool(args);
@@ -591,10 +842,22 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "page_read": return await pageReadTool();
     case "page_find": return await pageFindTool(args);
     case "page_click": return await pageClickTool(args);
+    case "page_type": return await pageTypeTool(args);
     case "page_highlight": return await pageHighlightTool(args);
     case "page_scroll": return await pageScrollTool(args);
     case "page_open": return await pageOpenTool(args);
     case "page_navigate": return await pageNavigateTool(args);
+    case "search_code": return await searchCodeTool(args);
+    case "index_workspace": return await indexWorkspaceTool();
+    case "remember": return rememberTool(args);
+    case "recall": return recallTool();
+    case "task_add": return taskAddTool(args);
+    case "task_done": return taskDoneTool(args);
+    case "task_list": return taskListTool();
+    case "spawn_agents": return await spawnAgentsTool(args);
+    case "browser_console": return await browserConsoleTool();
+    case "browser_network": return await browserNetworkTool();
+    case "browser_performance": return await browserPerformanceTool();
     default: return `Error: Unknown tool: ${name}`;
   }
 }

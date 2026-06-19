@@ -1,7 +1,8 @@
-import { spawn, type ChildProcess } from "child_process";
+import { spawn, spawnSync, type ChildProcess } from "child_process";
 import { platform } from "os";
 import { getConfig } from "./config";
 import { resolve } from "path";
+import { killPort } from "./ports";
 
 // Long-running background processes (dev servers, watchers, hosts). Unlike the
 // `bash` tool — which runs to completion and blocks — these stay alive after the
@@ -19,6 +20,18 @@ export interface ServerProc {
   exitCode: number | null;
   startedAt: number;
   url: string | null;    // detected http URL, if any
+  errors: string[];      // error-looking lines not yet reported to the agent
+}
+
+// Error/console streaming: lines that look like runtime/build failures are
+// collected per server and drained into the agent loop automatically, so the
+// model sees crashes without having to ask for server_logs (Cursor-style).
+const ERROR_LINE_RE = /\b(error|err!|exception|typeerror|referenceerror|syntaxerror|unhandled(?:\s+promise)?(?:\s+rejection)?|rejection|traceback|panic(?:ked)?|fatal|build failed|compile(?:d with)? errors|eaddrinuse|enoent|cannot find module|module not found|failed to compile|segfault)\b/i;
+// Lines that match the pattern but are normal chatter (e.g. "0 errors").
+const ERROR_FALSE_POSITIVE_RE = /\b(0 errors?|no errors?|errors?:\s*0|without errors?)\b/i;
+
+function looksLikeError(line: string): boolean {
+  return ERROR_LINE_RE.test(line) && !ERROR_FALSE_POSITIVE_RE.test(line);
 }
 
 const MAX_LOG_LINES = 400;
@@ -47,6 +60,10 @@ function appendLog(p: ServerProc, chunk: string) {
   for (const line of lines) {
     if (line === "") continue;
     p.logs.push(line);
+    if (looksLikeError(line)) {
+      p.errors.push(line);
+      if (p.errors.length > 40) p.errors.splice(0, p.errors.length - 40);
+    }
     if (!p.url) {
       const u = detectUrl(line);
       if (u) p.url = u;
@@ -74,6 +91,7 @@ export function startServer(command: string, cwd?: string): ServerProc {
     exitCode: null,
     startedAt: Date.now(),
     url: null,
+    errors: [],
   };
 
   child.stdout?.on("data", (d) => appendLog(proc, d.toString()));
@@ -103,18 +121,53 @@ export function serverLogs(id: string, lines = 60): string[] {
 export function stopServer(id: string): boolean {
   const p = registry.get(id);
   if (!p) return false;
+
+  // Gather ports to kill before stopping process tree
+  const portsToKill: number[] = [];
+  if (p.url) {
+    const match = p.url.match(/:(\d+)(?:\/|$)/);
+    if (match && match[1]) {
+      const portVal = parseInt(match[1], 10);
+      if (!isNaN(portVal)) portsToKill.push(portVal);
+    }
+  }
+  const portRegex = /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]?):(\d{2,5})\b/gi;
+  for (const line of p.logs) {
+    let m;
+    portRegex.lastIndex = 0;
+    while ((m = portRegex.exec(line)) !== null) {
+      if (m[1]) {
+        const portVal = parseInt(m[1], 10);
+        if (!isNaN(portVal) && !portsToKill.includes(portVal)) {
+          portsToKill.push(portVal);
+        }
+      }
+    }
+  }
+
   if (p.status === "running") {
     try {
       if (platform() === "win32") {
         // Kill the whole tree so child node/bun processes die too.
-        spawn("taskkill", ["/pid", String(p.child.pid), "/T", "/F"]);
+        spawnSync("taskkill", ["/pid", String(p.child.pid), "/T", "/F"], { windowsHide: true });
       } else {
         p.child.kill("SIGTERM");
       }
     } catch {
       /* already gone */
     }
+    p.status = "exited";
   }
+
+  // Forcefully kill any remaining processes listening on the server's ports
+  for (const port of portsToKill) {
+    try {
+      killPort(port);
+    } catch {
+      /* ignore */
+    }
+  }
+
   return true;
 }
 
@@ -123,6 +176,18 @@ export function stopAllServers(): void {
   for (const p of registry.values()) {
     if (p.status === "running") stopServer(p.id);
   }
+}
+
+// Drain error lines that haven't been reported yet. Called by the chat loop
+// between iterations: returns each server's pending error lines (and clears
+// them), so the agent automatically SEES runtime/build errors as they happen.
+export function drainServerErrors(): { id: string; command: string; lines: string[] }[] {
+  const out: { id: string; command: string; lines: string[] }[] = [];
+  for (const p of registry.values()) {
+    if (p.errors.length === 0) continue;
+    out.push({ id: p.id, command: p.command, lines: p.errors.splice(0, p.errors.length) });
+  }
+  return out;
 }
 
 // Wait up to `ms`, resolving early if the process exits — lets startServer's

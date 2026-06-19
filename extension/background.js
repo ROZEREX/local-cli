@@ -19,11 +19,10 @@ function connect() {
   let opened = false, sock;
   try { sock = new WebSocket(wsUrl()); } catch { advance(); return; }
   ws = sock;
-  sock.onopen = () => { opened = true; pushStatus(true); };
+  sock.onopen = () => { opened = true; };
   sock.onerror = () => { try { sock.close(); } catch {} };
   sock.onclose = () => {
     if (ws === sock) ws = null;
-    pushStatus(false);
     if (!opened) advance();          // wrong port — try the next one
     scheduleReconnect();             // (same port if it had connected)
   };
@@ -39,7 +38,6 @@ const connected = () => !!(ws && ws.readyState === 1);
 
 function sendToServer(obj) { if (connected()) ws.send(JSON.stringify(obj)); }
 function sendToActiveTab(m) { if (activeTabId != null) chrome.tabs.sendMessage(activeTabId, m).catch(() => {}); }
-function pushStatus(on) { if (activeTabId != null) chrome.tabs.sendMessage(activeTabId, { t: "ext_status", connected: on }).catch(() => {}); }
 
 function handleBgCommand(m) {
   const reply = (result) => sendToServer({ t: "cmdreply", id: m.id, result });
@@ -78,7 +76,5 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.t === "to_server") { sendToServer(msg.payload); reply({ ok: true }); return true; }
   return false;
 });
-
-chrome.action.onClicked.addListener((tab) => { activeTabId = tab.id; chrome.tabs.sendMessage(tab.id, { t: "toggle_panel" }).catch(() => {}); });
 
 connect();

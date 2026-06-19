@@ -25,8 +25,9 @@ export interface Config {
   // is injected into every prompt. "" = none selected (auto-use if only one).
   activeProfile: string;
   // Persisted interaction mode. "auto" = the agent runs mutating tools without
-  // asking (autonomous); "plan" = research-only; "normal" = prompt per action.
-  mode: "normal" | "plan" | "auto";
+  // asking (autonomous); "plan" = research-only; "normal" = prompt per action;
+  // "debug" = evidence-driven reproduce→fix→verify loop (asks like normal).
+  mode: "normal" | "plan" | "auto" | "debug";
   // Tools the user has permanently allowed (via "Always allow" / the CLI's 'a').
   // These never prompt again, even in normal mode. e.g. ["bash"].
   alwaysAllow: string[];
@@ -34,6 +35,36 @@ export interface Config {
   // — maxTokens already caps a runaway, and esc interrupts manually. Opt in if a
   // model loops badly for you.
   loopGuard: boolean;
+  // Ollama keep_alive override (e.g. "30m", "-1" = forever). Defaults to "30m"
+  // so the model stays resident between turns instead of unloading after
+  // Ollama's 5-minute default and paying a full reload on the next message.
+  keepAlive?: string;
+  // Ollama num_gpu override: how many layers to offload to the GPU. Unset =
+  // Ollama decides. Lower it to fit a big model partially; raise to force more
+  // onto the GPU when Ollama is being conservative.
+  numGpu?: number;
+  // Ollama num_thread override for CPU inference. Unset = Ollama decides
+  // (physical cores). Set it if Ollama under-uses your CPU.
+  numThread?: number;
+  // Sandboxed execution for the bash tool: run commands inside a container
+  // instead of directly on the host (protects against an agent mistake like
+  // rm -rf in auto mode). "none" = run on the host (default).
+  sandbox: "none" | "docker" | "podman";
+  // Container image used when sandbox is enabled.
+  sandboxImage: string;
+  // Max fix-and-retest iterations for the /debug autonomous loop.
+  debugMaxIterations: number;
+  // UI color theme preset (see /theme): "tokyo" (default), "dark", "light", "mono".
+  theme: string;
+  // Stream watchdog (cold-load / hang resilience). While waiting for the model's
+  // first token, emit a "still loading" heartbeat every this-many seconds (0 =
+  // off). On a 12 GB-VRAM box a cold load can take a while; this keeps the UI
+  // from looking frozen.
+  stallHeartbeatSec: number;
+  // If the first token doesn't arrive within this-many seconds, abort and retry
+  // the turn (the model is warmed first). 0 = never abort. Generous by default so
+  // a genuinely slow cold load isn't cut short; a wedged server still recovers.
+  stallTimeoutSec: number;
 }
 
 // Resolved lazily so tests can isolate their config via LOCAL_CLI_CONFIG_DIR
@@ -62,6 +93,13 @@ const DEFAULTS: Config = {
   loopGuard: false,
   mode: "normal",
   alwaysAllow: [],
+  keepAlive: "30m",
+  sandbox: "none",
+  sandboxImage: "alpine:latest",
+  debugMaxIterations: 10,
+  theme: "tokyo",
+  stallHeartbeatSec: 15,
+  stallTimeoutSec: 120,
 };
 
 let _config: Config | null = null;

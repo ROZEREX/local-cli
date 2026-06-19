@@ -1,3 +1,0 @@
-/* The panel lives in a shadow root (styled in content.js); this only guards the
-   host element so the page can't shift or hide it. */
-#localcli-ext-host { all: initial; position: fixed; z-index: 2147483647; }

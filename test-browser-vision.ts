@@ -11,7 +11,7 @@ const check = (l: string, c: boolean, d = "") => { c ? (pass++, console.log(`  â
 
 // registration
 const names = TOOL_DEFINITIONS.map((t: any) => t.function.name);
-for (const n of ["browser_open", "browser_read", "browser_click", "browser_screenshot", "browser_close", "screenshot"]) {
+for (const n of ["browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_close", "screenshot"]) {
   check(`${n} is a registered tool`, names.includes(n));
 }
 
@@ -20,6 +20,10 @@ let r = await executeTool("browser_open", {});
 check("browser_open requires a url", r.includes("url is required"), r);
 r = await executeTool("browser_click", {});
 check("browser_click requires a target", r.includes("selector or visible text"), r);
+r = await executeTool("browser_type", {});
+check("browser_type requires a target", r.includes("placeholder, or label text"), r);
+r = await executeTool("browser_type", { target: "input" });
+check("browser_type requires text", r.includes("text is required"), r);
 
 // arg aliases (address -> url) â€” should get past validation and try to open
 r = await executeTool("browser_open", { address: "http://localhost:65530" });

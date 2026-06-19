@@ -9,6 +9,7 @@ import { Markdown } from "./markdown";
 import { readClipboard, sanitizeForInput } from "../clipboard";
 import { listDirEntries } from "../files";
 import type { DiffView } from "../diff";
+import type { Hunk } from "../hunks";
 import type { SessionMeta } from "../session";
 
 function relTime(ts: number): string {
@@ -35,28 +36,36 @@ function Pill({ icon, label, color }: { icon: string; label: string; color: stri
 // ─── Banner ─────────────────────────────────────────────────────────────────
 export function Banner({ model, baseUrl, cwd }: { model: string; baseUrl: string; cwd: string }) {
   const shortCwd = cwd.length > 48 ? "…" + cwd.slice(-47) : cwd;
+  const row = (icon: string, label: string, value: React.ReactNode) => (
+    <Box>
+      <Text color={theme.color.dim}>{icon} {label.padEnd(7)}</Text>
+      {value}
+    </Box>
+  );
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Gradient colors={GRAD}>
         <BigText text="local cli" font="tiny" />
       </Gradient>
+      <Box marginTop={-1} paddingLeft={1}>
+        <Text color={theme.color.dim}>agentic coding on your own models</Text>
+      </Box>
       <Box
         flexDirection="column"
         borderStyle="round"
         borderColor={theme.color.dim}
         paddingX={1}
+        marginTop={1}
       >
-        <Box>
-          <Pill icon={theme.icon.model} label={model} color={theme.color.primary} />
-          <Text color={theme.color.dim}>   {theme.icon.folder} </Text>
-          <Text color={theme.color.fg}>{shortCwd}</Text>
-        </Box>
-        <Text color={theme.color.dim}>{baseUrl}</Text>
+        {row(theme.icon.model, "model", <Text color={theme.color.primary} bold>{model}</Text>)}
+        {row(theme.icon.folder, "folder", <Text color={theme.color.fg}>{shortCwd}</Text>)}
+        {row("⌁", "server", <Text color={theme.color.dim}>{baseUrl}</Text>)}
       </Box>
       <Box paddingLeft={1} marginTop={0}>
         <Text color={theme.color.dim}>
           <Text color={theme.color.accent}>/add</Text> files ·{" "}
           <Text color={theme.color.accent}>/chats</Text> history ·{" "}
+          <Text color={theme.color.accent}>/browser</Text> guide ·{" "}
           <Text color={theme.color.accent}>/help</Text> ·{" "}
           <Text color={theme.color.accent}>shift+tab</Text> mode ·{" "}
           <Text color={theme.color.accent}>esc</Text> stop
@@ -221,7 +230,7 @@ export function StatusBar({
   tokens: number;
   contextWindow: number;
   status: StatusState;
-  mode: "normal" | "plan" | "auto";
+  mode: "normal" | "plan" | "auto" | "debug";
 }) {
   const pct = Math.min(100, Math.round((tokens / contextWindow) * 100));
   const pctColor = pct > 85 ? theme.color.error : pct > 65 ? theme.color.warn : theme.color.dim;
@@ -240,6 +249,7 @@ export function StatusBar({
   const badge =
     mode === "plan" ? <Text backgroundColor={theme.color.accent} color="black" bold> PLAN </Text> :
     mode === "auto" ? <Text backgroundColor={theme.color.warn} color="black" bold> AUTO </Text> :
+    mode === "debug" ? <Text backgroundColor={theme.color.error} color="black" bold> DEBUG </Text> :
     null;
 
   return (
@@ -252,7 +262,8 @@ export function StatusBar({
         <Text dimColor>{theme.icon.model} </Text>
         <Text color={theme.color.primary}>{model}</Text>
         <Text dimColor>   {theme.icon.tokens} context </Text>
-        <Text color={pctColor}>{tokens.toLocaleString()}</Text>
+        <ContextBar pct={pct} color={pctColor} />
+        <Text color={pctColor}> {tokens.toLocaleString()}</Text>
         <Text dimColor> / {contextWindow.toLocaleString()} </Text>
         <Text color={pctColor}>({pct}%)</Text>
       </Box>
@@ -260,17 +271,54 @@ export function StatusBar({
   );
 }
 
+// Mini context-usage meter for the status bar: ▰▰▰▱▱▱▱▱▱▱
+function ContextBar({ pct, color }: { pct: number; color: string }) {
+  const cells = 10;
+  const filled = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)));
+  return (
+    <Text>
+      <Text color={color}>{"▰".repeat(filled)}</Text>
+      <Text color={theme.color.dim}>{"▱".repeat(cells - filled)}</Text>
+    </Text>
+  );
+}
+
 // ─── Generating indicator (the single live activity line while streaming) ─────
-export function GeneratingLine({ tokens, elapsed }: { tokens: number; elapsed: number }) {
+// Phase-aware: distinguishes a model being LOADED into memory from prompt
+// prefill from actual thinking/writing — so a silent wait is never ambiguous.
+export type LivePhase = "loading" | "prefill" | "generating" | null;
+
+export function GeneratingLine({
+  tokens,
+  elapsed,
+  phase,
+  thinking,
+}: {
+  tokens: number;
+  elapsed: number;
+  phase?: LivePhase;
+  thinking?: boolean;
+}) {
   // Live tok/s derived from the ticking counters, so it updates in real time
   // instead of only at the end of the turn.
   const liveTps = elapsed > 0 ? Math.round(tokens / elapsed) : 0;
+  const label =
+    phase === "loading" ? "loading model into memory" :
+    tokens === 0 && phase === "prefill" ? "reading the prompt" :
+    tokens === 0 ? "waiting for the model" :
+    thinking ? "thinking" : "writing";
+  const note =
+    phase === "loading" ? "  (cold start — can take a while)" :
+    tokens === 0 && phase === "prefill" ? "  (prefill)" : "";
   return (
     <Box>
-      <Text color={theme.color.warn}><Spinner type="dots" /> generating </Text>
-      <Text color={theme.color.success}>↓{tokens.toLocaleString()} tok</Text>
-      <Text color={theme.color.dim}> · {elapsed}s</Text>
-      {liveTps ? <Text color={theme.color.dim}> · {liveTps} t/s</Text> : null}
+      <Text color={thinking && tokens > 0 ? theme.color.think : theme.color.warn}>
+        <Spinner type="dots" /> {label}{" "}
+      </Text>
+      {tokens > 0 ? <Text color={theme.color.success}>↓{tokens.toLocaleString()} tok</Text> : null}
+      <Text color={theme.color.dim}>{tokens > 0 ? " · " : ""}{elapsed}s</Text>
+      {liveTps && tokens > 0 ? <Text color={theme.color.dim}> · {liveTps} t/s</Text> : null}
+      {note ? <Text color={theme.color.dim}>{note}</Text> : null}
       <Text color={theme.color.dim}>   ·  esc to stop</Text>
     </Box>
   );
@@ -300,24 +348,88 @@ export function DiffPreview({ diff }: { diff: DiffView }) {
 }
 
 // ─── Permission prompt ───────────────────────────────────────────────────────
+// For file edits with a multi-hunk diff, [s] opens an interactive hunk selector
+// so the user can apply only PART of the proposed change (Cursor-style).
 export function PermissionPrompt({
   name,
   detail,
   diff,
+  hunks,
+  onPartial,
   onDecide,
 }: {
   name: string;
   detail: string;
   diff?: DiffView;
+  hunks?: Hunk[];
+  onPartial?: (selectedHunks: number[]) => void;
   onDecide: (decision: "yes" | "no" | "always") => void;
 }) {
+  const canSelect = !!onPartial && !!hunks && hunks.length >= 2;
+  const [selecting, setSelecting] = useState(false);
+  const [cursor, setCursor] = useState(0);
+  const [picked, setPicked] = useState<Set<number>>(() => new Set((hunks ?? []).map(h => h.index)));
+
   useInput((input, key) => {
     const c = input.toLowerCase();
+    if (selecting) {
+      if (key.upArrow) setCursor(i => Math.max(0, i - 1));
+      else if (key.downArrow) setCursor(i => Math.min((hunks?.length ?? 1) - 1, i + 1));
+      else if (input === " ") {
+        setPicked(prev => {
+          const next = new Set(prev);
+          const idx = hunks![cursor]!.index;
+          next.has(idx) ? next.delete(idx) : next.add(idx);
+          return next;
+        });
+      } else if (key.return) {
+        if (picked.size === 0) onDecide("no");
+        else if (picked.size === hunks!.length) onDecide("yes");
+        else onPartial!([...picked].sort((a, b) => a - b));
+      } else if (key.escape) setSelecting(false);
+      return;
+    }
     if (c === "y") onDecide("yes");
     else if (c === "a") onDecide("always");
+    else if (c === "s" && canSelect) setSelecting(true);
     else if (c === "n" || key.escape) onDecide("no");
     else if (key.return) onDecide("no"); // default = deny
   });
+
+  if (selecting && hunks) {
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={theme.color.warn} paddingX={1}>
+        <Box>
+          <Text color={theme.color.warn} bold>{theme.icon.warn} select hunks </Text>
+          <Text color={theme.color.tool} bold>{name}</Text>
+          <Text dimColor>  — apply only the changes you check</Text>
+        </Box>
+        {hunks.map((h, i) => (
+          <Box key={h.index} flexDirection="column">
+            <Text color={i === cursor ? theme.color.accent : undefined}>
+              {i === cursor ? "❯ " : "  "}
+              {picked.has(h.index) ? "☑" : "☐"}{" "}
+              <Text color={theme.color.success}>+{h.added}</Text>
+              <Text color={theme.color.error}> -{h.removed}</Text>
+              <Text dimColor>  {h.header}</Text>
+            </Text>
+            {i === cursor
+              ? h.lines.slice(0, 6).map((l, j) => (
+                  <Text key={j} color={l.type === "add" ? theme.color.success : theme.color.error}>
+                    {"      "}{l.type === "add" ? "+ " : "- "}
+                    {l.text.length > 110 ? l.text.slice(0, 110) + "…" : l.text}
+                  </Text>
+                ))
+              : null}
+            {i === cursor && h.lines.length > 6 ? <Text dimColor italic>{"      "}⋯ {h.lines.length - 6} more lines</Text> : null}
+          </Box>
+        ))}
+        <Box marginTop={1}>
+          <Text dimColor>↑↓ move · space toggle · enter apply {picked.size}/{hunks.length} · esc back</Text>
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.color.warn} paddingX={1}>
@@ -331,7 +443,8 @@ export function PermissionPrompt({
         <Text>
           <Text color={theme.color.success} bold>y</Text><Text dimColor> allow   </Text>
           <Text color={theme.color.error} bold>n</Text><Text dimColor> deny   </Text>
-          <Text color={theme.color.primary} bold>a</Text><Text dimColor> always allow this tool</Text>
+          <Text color={theme.color.primary} bold>a</Text><Text dimColor> always   </Text>
+          {canSelect ? <><Text color={theme.color.accent} bold>s</Text><Text dimColor> select hunks</Text></> : null}
         </Text>
       </Box>
     </Box>

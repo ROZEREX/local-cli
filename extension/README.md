@@ -1,52 +1,91 @@
 # local-cli — browser extension (live page agent)
 
-A floating chat that rides along on whatever page you're viewing and lets your
-local-cli agent **see, highlight, and click** things on it — with a visible AI
-cursor and highlights, so you watch it work. Ask it "find the cheapest item",
-"fill this form", "click the login button", etc.
+This extension lets the agent work on **the page you are actually looking at** —
+your real browser, your real session, logins included. You watch it work: an
+animated **AI cursor** glides to each element with a small `click`/`type` label,
+and everything it touches gets a **highlight box**.
 
-It connects to the same `bun run web` server as the web UI (no separate backend).
+> There are TWO ways the agent uses browsers — don't confuse them:
+>
+> | | What it is | Setup | Best for |
+> |---|---|---|---|
+> | **Agent's own browser** (`browser_*` tools) | A separate Chrome window the agent launches and controls | none | testing apps it builds (`localhost`) |
+> | **Your live browser** (`page_*` tools, THIS extension) | The tab you're viewing right now | install once, below | real sites: shopping, forms, research |
+>
+> Ask `/browser` in the CLI (or click the **?** in the web UI's Browser tab) for
+> this guide any time.
 
-## Install (one-time, ~30s)
+## Install (one-time, ~30 seconds)
 
-Chrome won't let an **unpublished** extension install with a single click — that
-requires the Chrome Web Store (a paid dev account + review). So for now it's
-"load unpacked", which you do once:
+Chrome doesn't allow one-click installs for unpublished extensions, so it's
+"load unpacked" — once:
 
 1. Start the server: **`bun run web`** (from the project root).
 2. Open **chrome://extensions** (or edge://extensions).
-3. Turn on **Developer mode** (top-right toggle).
+3. Toggle on **Developer mode** (top-right).
 4. Click **Load unpacked** → select this `extension/` folder.
 
-That's it — it stays installed. The dot in the panel header (and the **live
-browser** badge in the web UI header) turns green when it's connected.
+**How to know it's connected:** the ◆ bubble's header dot turns **green**, and
+the web UI header shows a green **live browser** badge.
 
-## Two ways to use it
-- **From the main web chat** (`http://localhost:4317`): once the badge says *live
-  browser*, just ask — "open amazon.com and find the cheapest mechanical
-  keyboard". The agent uses **page_open** to open a tab and acts on it; you watch
-  the AI cursor + highlights.
-- **From the floating panel** on any page: click the **◆ bubble** (bottom-right) or
-  the toolbar icon, and chat right there about the page you're on.
+## How to use it
 
-## What it can do on the page
-- **page_read** — read the visible text + clickable elements (so the agent
-  understands the page).
-- **page_find** — find & **highlight** matching elements for you.
-- **page_click** — move the **AI cursor** to an element, highlight it, and click —
-  you see exactly what it's doing.
-- **page_highlight** — point at something without clicking.
-- **page_scroll** — scroll to reveal more.
+**Option A — from the main web chat** (`http://localhost:4317`):
+once the *live browser* badge is green, just ask in plain language:
 
-The agent decides when to use these. In **auto** mode it acts on its own; in
-**normal** mode it asks before clicking (a safeguard for forms/purchases).
+- *"open amazon.com and find the cheapest mechanical keyboard under $50"*
+- *"read this page and summarize the reviews"* (with the tab you're on)
+- *"fill the signup form with test data"*
 
-## How it's wired
-`content.js` (the panel + cursor + executor) ↔ `background.js` (the only part
-allowed to open a `ws://localhost:4317/ext` socket) ↔ the local-cli server's
-`/ext` endpoint ↔ the agent's `page_*` tools (`src/extbridge.ts`). The agent runs
-the SAME `chat()` loop as everywhere else.
+**Option B — from the floating panel on any page:** click the **◆ bubble**
+(bottom-right of any page) or the extension's toolbar icon, and chat right
+there. The panel shows the model's live **thinking**, a status line (loading /
+reading / running a tool), and the conversation.
 
-> Notes: the WS URL is `ws://localhost:4317/ext`. If you run the server on another
-> port, update `WS_URL` in `background.js`. Be careful in **auto** mode on pages
-> with real purchases/forms — clicks are real.
+## What you'll see while it works
+
+- The **AI cursor** (blue arrow) glides to the element it's about to use, with a
+  `click` or `type` label next to it.
+- **Highlight boxes** flash around elements it reads, finds, or acts on.
+- `page_find` highlights every match at once — that's the agent "pointing".
+- In the chat, the agent narrates each step in one short sentence.
+
+## What it can do on a page
+
+| Tool | What it does |
+|---|---|
+| `page_open` / `page_navigate` | open a new tab / change this tab's URL |
+| `page_read` | read visible text + list the clickable elements |
+| `page_find` | find text on the page and **highlight** the matches |
+| `page_click` | move the cursor to an element, highlight, click |
+| `page_type` | fill an input or textarea |
+| `page_highlight` | point at something without clicking |
+| `page_scroll` | scroll down/up/top/bottom |
+
+The agent picks these itself — you never call them directly.
+
+## Safety
+
+- In **normal** mode the agent asks permission before every click/type.
+- In **auto** mode it acts on its own. Clicks are REAL — be careful on pages
+  with purchases, payments, or destructive forms.
+- It always confirms with you before anything irreversible (submitting orders,
+  payments, deletions).
+
+## Troubleshooting
+
+- **Dot stays red:** is `bun run web` running? The worker scans ports
+  4317–4321; if your server ended up elsewhere, edit `PORTS` at the top of
+  `background.js`.
+- **Panel doesn't appear:** the page may block content scripts
+  (chrome:// pages, the Web Store). Try a regular website.
+- **Stopped responding after an update:** reload the extension in
+  chrome://extensions (↻ on the card), then refresh the page.
+
+## How it's wired (for the curious)
+
+`content.js` (panel + cursor + command executor on the page)
+↔ `background.js` (MV3 worker — the only part allowed to open the
+`ws://localhost:4317/ext` socket) ↔ the local-cli server's `/ext` endpoint
+(`src/extbridge.ts`) ↔ the agent's `page_*` tools. Same `chat()` loop as the
+CLI and web UI.

@@ -11,12 +11,24 @@
       theme: {
         extend: {
           colors: {
-            bg: "#16161e", surface: "#1a1b26", panel: "#1f2335", panel2: "#24283b",
-            edge: "#2a2e42", ink: "#c0caf5", dim: "#565f89",
-            primary: "#7aa2f7", accent: "#7dcfff", teal: "#73daca", grn: "#9ece6a",
-            warn: "#e0af68", danger: "#f7768e",
+            bg: "#0a0a0a",
+            surface: "#121212",
+            panel: "#18181b",
+            panel2: "#27272a",
+            edge: "#2a2a2d",
+            ink: "#f4f4f5",
+            dim: "#8e8e93",
+            primary: "#ffffff",
+            accent: "#e4e4e7",
+            teal: "#d4d4d8",
+            grn: "#22c55e",
+            warn: "#f59e0b",
+            danger: "#ef4444",
           },
-          fontFamily: { mono: ["Cascadia Code", "JetBrains Mono", "Consolas", "monospace"] },
+          fontFamily: {
+            sans: ["Geist", "Inter", "system-ui", "sans-serif"],
+            mono: ["Geist Mono", "JetBrains Mono", "Consolas", "monospace"],
+          },
           keyframes: {
             rise: { "0%": { opacity: 0, transform: "translateY(8px)" }, "100%": { opacity: 1, transform: "none" } },
             pop: { "0%": { opacity: 0, transform: "scale(.96)" }, "100%": { opacity: 1, transform: "scale(1)" } },
@@ -32,102 +44,230 @@
       },
     };
   </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&family=Geist:wght@100..900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://unpkg.com/lucide@latest"></script>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body class="bg-bg text-ink font-sans antialiased">
-  <div id="app" class="flex h-screen overflow-hidden">
+<body class="bg-bg text-ink font-sans antialiased selection:bg-zinc-800 selection:text-white">
+  <div id="app" class="flex h-screen overflow-hidden p-3 gap-3">
 
-    <!-- Sidebar -->
-    <aside id="sidebar" class="w-72 shrink-0 border-r border-edge bg-surface/80 backdrop-blur flex flex-col transition-all duration-200">
-      <div class="p-3 flex items-center gap-2 border-b border-edge">
-        <span class="text-accent text-lg">◆</span>
-        <span class="font-bold tracking-wide bg-gradient-to-r from-accent via-primary to-teal bg-clip-text text-transparent">local-cli</span>
-        <span id="conn" class="ml-1 w-2 h-2 rounded-full bg-danger" title="connection"></span>
-        <button id="new-chat" class="ml-auto flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-edge hover:border-primary hover:text-white transition">
-          <i data-lucide="plus" class="w-3.5 h-3.5"></i> New
+    <!-- Sidebar (Left Column) -->
+    <aside id="sidebar" class="w-60 xl:w-72 shrink-0 rounded-3xl border border-edge bg-surface flex flex-col transition-all duration-200 overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
+      <div class="p-4 flex items-center gap-2 border-b border-edge/60">
+        <span class="text-white font-mono font-bold tracking-widest text-lg">CCLI</span>
+        <span class="text-dim text-[11px] font-mono border border-edge rounded-full px-2 py-0.5">LOCAL</span>
+        <span id="conn" class="ml-auto w-2.5 h-2.5 rounded-full bg-danger border border-black" title="connection status"></span>
+      </div>
+
+      <!-- Folder Selector -->
+      <button id="folder-btn" class="mx-3 my-4 text-left px-3.5 py-2.5 rounded-2xl bg-panel hover:bg-panel2 border border-edge transition group">
+        <div class="flex items-center gap-2 text-[10px] uppercase tracking-wider font-semibold text-dim">
+          <i data-lucide="folder" class="w-3.5 h-3.5"></i> working folder
+          <i data-lucide="pencil" class="w-3 h-3 ml-auto opacity-0 group-hover:opacity-100 transition-opacity"></i>
+        </div>
+        <div id="cwd" class="font-mono text-[11px] text-white truncate mt-1">—</div>
+      </button>
+
+      <!-- Chats Header -->
+      <div class="px-4 pb-2 flex items-center justify-between text-[11px] uppercase tracking-wider font-semibold text-dim">
+        <span class="flex items-center gap-1.5"><i data-lucide="messages-square" class="w-3.5 h-3.5"></i> Chats</span>
+        <button id="new-chat" class="flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full bg-zinc-900 border border-edge hover:bg-zinc-850 hover:text-white transition">
+          <i data-lucide="plus" class="w-3 h-3"></i> New
         </button>
       </div>
 
-      <!-- Folder -->
-      <button id="folder-btn" class="m-3 mb-1 text-left px-3 py-2 rounded-lg bg-panel hover:bg-panel2 border border-edge transition group">
-        <div class="flex items-center gap-2 text-xs text-dim"><i data-lucide="folder" class="w-3.5 h-3.5"></i> working folder <i data-lucide="pencil" class="w-3 h-3 ml-auto opacity-0 group-hover:opacity-100"></i></div>
-        <div id="cwd" class="font-mono text-[11px] text-teal truncate mt-0.5">—</div>
-      </button>
+      <!-- Chats List -->
+      <div id="sessions" class="flex-1 overflow-y-auto px-2 space-y-1 py-1"></div>
 
-      <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wider text-dim flex items-center gap-1">
-        <i data-lucide="messages-square" class="w-3 h-3"></i> Chats
-      </div>
-      <div id="sessions" class="flex-1 overflow-y-auto px-2 space-y-1"></div>
-
-      <div class="p-3 border-t border-edge grid grid-cols-2 gap-2">
-        <button data-panel="browser" class="side-act"><i data-lucide="globe" class="w-3.5 h-3.5"></i> Browser</button>
-        <button data-panel="system" class="side-act"><i data-lucide="cpu" class="w-3.5 h-3.5"></i> System</button>
-        <button data-panel="profiles" class="side-act"><i data-lucide="user-round-cog" class="w-3.5 h-3.5"></i> Profiles</button>
-        <button data-panel="servers" class="side-act"><i data-lucide="server" class="w-3.5 h-3.5"></i> Servers</button>
-        <button data-panel="ports" class="side-act"><i data-lucide="plug-zap" class="w-3.5 h-3.5"></i> Ports</button>
-        <button id="learn-btn" class="side-act"><i data-lucide="graduation-cap" class="w-3.5 h-3.5"></i> Learn</button>
-        <button id="init-btn" class="side-act"><i data-lucide="sparkles" class="w-3.5 h-3.5"></i> /init</button>
-        <button data-panel="commands" class="side-act"><i data-lucide="slash" class="w-3.5 h-3.5"></i> /index</button>
+      <!-- Sidebar footer / commands indicator -->
+      <div class="p-3 border-t border-edge/60 text-center">
+        <button id="sidebar-commands" class="w-full py-2 rounded-full border border-edge text-[11px] uppercase tracking-widest font-bold hover:bg-zinc-900 hover:text-white transition">
+          <i data-lucide="slash" class="w-3.5 h-3.5 inline mr-1"></i> Command Menu
+        </button>
       </div>
     </aside>
 
-    <!-- Main -->
-    <div class="flex-1 flex flex-col min-w-0">
-      <header class="h-14 shrink-0 border-b border-edge bg-surface/70 backdrop-blur flex items-center gap-3 px-4">
-        <button id="sidebar-toggle" class="text-dim hover:text-white"><i data-lucide="panel-left" class="w-4 h-4"></i></button>
+    <!-- Chat Column (Center Column) -->
+    <div class="flex-1 flex flex-col min-w-0 rounded-3xl border border-edge bg-surface overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
+      <header class="min-h-14 shrink-0 border-b border-edge/60 flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2">
+        <button id="sidebar-toggle" class="text-dim hover:text-white transition" title="Toggle Sidebar"><i data-lucide="panel-left" class="w-4 h-4"></i></button>
 
         <div class="flex items-center gap-1.5">
-          <i data-lucide="cpu" class="w-4 h-4 text-primary"></i>
-          <select id="model" class="bg-panel2 border border-edge rounded-lg px-2 py-1 text-xs font-mono max-w-[220px]"></select>
-          <button id="model-info" class="text-dim hover:text-accent" title="Model details"><i data-lucide="info" class="w-4 h-4"></i></button>
+          <i data-lucide="cpu" class="w-4 h-4 text-dim"></i>
+          <select id="model" class="bg-zinc-900 border border-edge rounded-full px-3 py-1 text-xs font-mono text-white max-w-[240px] focus:outline-none focus:border-zinc-500"></select>
+          <button id="model-info" class="text-dim hover:text-white transition" title="Model details"><i data-lucide="info" class="w-4 h-4"></i></button>
         </div>
 
-        <div id="mode" class="flex rounded-lg border border-edge overflow-hidden text-xs">
-          <button data-mode="normal" class="mode-btn px-2.5 py-1">normal</button>
-          <button data-mode="plan" class="mode-btn px-2.5 py-1">plan</button>
-          <button data-mode="auto" class="mode-btn px-2.5 py-1">auto</button>
+        <div id="mode" class="flex bg-zinc-900 border border-edge rounded-full p-0.5 gap-0.5 text-[11px] font-semibold text-dim">
+          <button data-mode="normal" class="mode-btn px-3 py-1 transition-colors">normal</button>
+          <button data-mode="plan" class="mode-btn px-3 py-1 transition-colors">plan</button>
+          <button data-mode="auto" class="mode-btn px-3 py-1 transition-colors">auto</button>
+          <button data-mode="debug" class="mode-btn px-3 py-1 transition-colors" title="Investigate, fix & verify using logs, console, network">debug</button>
         </div>
 
-        <button id="think-btn" class="flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-edge text-dim hover:text-white" title="Toggle reasoning">
+        <button id="think-btn" class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-edge text-dim hover:text-white transition" title="Toggle reasoning text">
           <i data-lucide="brain" class="w-3.5 h-3.5"></i> think
         </button>
 
+        <!-- Right header items -->
         <div class="ml-auto flex items-center gap-3">
-          <span id="ext-badge" class="hidden items-center gap-1 text-[11px] text-grn" title="Browser extension connected — ask me to open and act on web pages"><i data-lucide="globe" class="w-3.5 h-3.5"></i> live browser</span>
-          <button id="compact-btn" class="text-dim hover:text-accent" title="Compact conversation"><i data-lucide="archive" class="w-4 h-4"></i></button>
-          <div class="flex items-center gap-1.5 font-mono text-[11px]">
-            <i data-lucide="gauge" class="w-3.5 h-3.5 text-dim"></i>
-            <span id="ctx-used">0</span><span class="text-dim">/</span><span id="ctx-limit">0</span>
-            <span id="ctx-pct" class="text-dim">(0%)</span>
+          <span id="ext-badge" class="hidden items-center gap-1.5 text-[11px] text-zinc-350" title="Browser extension connected — ask me to open and act on web pages">
+            <span class="w-1.5 h-1.5 rounded-full bg-grn animate-pulse"></span>
+            <i data-lucide="globe" class="w-3.5 h-3.5 text-dim"></i> <span class="ext-text">live browser</span>
+          </span>
+          <button id="compact-btn" class="text-dim hover:text-white transition" title="Compact conversation"><i data-lucide="archive" class="w-4 h-4"></i></button>
+          <div class="flex items-center gap-1.5 font-mono text-[11px] text-dim border-l border-edge pl-3">
+            <i data-lucide="gauge" class="w-3.5 h-3.5"></i>
+            <span id="ctx-used" class="text-zinc-350">0</span><span>/</span><span id="ctx-limit">0</span>
+            <span id="ctx-pct">(0%)</span>
           </div>
+          <button id="dashboard-toggle" class="text-dim hover:text-white transition border-l border-edge pl-3" title="Toggle Dashboard"><i data-lucide="panel-right" class="w-4 h-4"></i></button>
         </div>
       </header>
 
-      <main id="messages" class="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-5"></main>
+      <!-- Messages Stream -->
+      <main id="messages" class="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 scroll-smooth"></main>
 
-      <div class="px-4 md:px-8 pb-5 pt-2 border-t border-edge bg-surface/60">
-        <div id="live" class="hidden items-center gap-2 font-mono text-[11px] text-dim mb-2"></div>
-        <form id="form" class="flex items-end gap-2">
-          <button id="attach" type="button" class="shrink-0 h-11 w-11 grid place-items-center rounded-xl border border-edge text-dim hover:text-accent hover:border-primary transition" title="Attach files">
+      <!-- Input Footer -->
+      <div class="px-4 md:px-8 pb-5 pt-3 border-t border-edge/60">
+        <div id="live" class="hidden items-center gap-2 font-mono text-[11px] text-zinc-400 mb-2.5 border border-edge bg-panel px-4 py-2 rounded-full w-fit max-w-full mx-auto"></div>
+        <div id="img-previews" class="hidden flex-wrap gap-2 mb-2.5 max-w-4xl mx-auto"></div>
+        <form id="form" class="flex items-end gap-2 max-w-4xl mx-auto">
+          <button id="attach" type="button" class="shrink-0 h-11 w-11 grid place-items-center rounded-full border border-edge bg-zinc-900 text-dim hover:text-white hover:border-zinc-500 transition" title="Attach files">
             <i data-lucide="paperclip" class="w-4 h-4"></i>
           </button>
-          <textarea id="input" rows="1" placeholder="Message local-cli…  (Enter to send · Shift+Enter newline)"
-            class="flex-1 resize-none bg-panel border border-edge rounded-xl px-4 py-3 text-[15px] leading-relaxed max-h-52 focus:outline-none focus:border-primary transition"></textarea>
-          <button id="send" type="submit" class="shrink-0 h-11 px-5 rounded-xl bg-primary text-bg font-semibold hover:bg-accent transition flex items-center gap-1.5">
-            <i data-lucide="send-horizontal" class="w-4 h-4"></i>
+          <textarea id="input" rows="1" placeholder="Message local-cli…  (Enter to send · Shift+Enter newline · Ctrl+V pastes images)"
+            class="flex-1 resize-none bg-zinc-900 border border-edge rounded-3xl px-5 py-3 text-[14px] leading-relaxed max-h-52 text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition"></textarea>
+          <button id="send" type="submit" class="shrink-0 h-11 px-6 rounded-full bg-white text-black font-bold hover:bg-zinc-200 transition flex items-center gap-1.5">
+            <i data-lucide="send-horizontal" class="w-4 h-4"></i><span class="send-text">Send</span>
           </button>
-          <button id="stop" type="button" class="hidden shrink-0 h-11 px-5 rounded-xl bg-danger text-bg font-semibold flex items-center gap-1.5">
-            <i data-lucide="square" class="w-4 h-4"></i> Stop
+          <button id="stop" type="button" class="hidden shrink-0 h-11 px-6 rounded-full bg-danger text-white font-bold hover:bg-red-650 transition flex items-center gap-1.5">
+            <i data-lucide="square" class="w-4 h-4"></i><span class="stop-text">Stop</span>
           </button>
         </form>
       </div>
     </div>
+
+    <!-- Workspace Dashboard (Right Column) -->
+    <aside id="dashboard" class="w-[340px] xl:w-[420px] shrink-0 rounded-3xl border border-edge bg-surface flex flex-col transition-all duration-200 overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
+      <!-- Dashboard Tabs Header -->
+      <div class="flex gap-1 p-2.5 border-b border-edge/60 shrink-0">
+        <button data-dash-tab="browser" class="dash-tab flex-1 py-2 transition flex items-center justify-center gap-1.5">
+          <i data-lucide="globe" class="w-3.5 h-3.5"></i>
+          <span class="text-[9px] uppercase tracking-wider font-bold">Browser</span>
+        </button>
+        <button data-dash-tab="runtime" class="dash-tab flex-1 py-2 transition flex items-center justify-center gap-1.5">
+          <i data-lucide="play" class="w-3.5 h-3.5"></i>
+          <span class="text-[9px] uppercase tracking-wider font-bold">Runtime</span>
+        </button>
+        <button data-dash-tab="profiles" class="dash-tab flex-1 py-2 transition flex items-center justify-center gap-1.5">
+          <i data-lucide="user-round-cog" class="w-3.5 h-3.5"></i>
+          <span class="text-[9px] uppercase tracking-wider font-bold">Profiles</span>
+        </button>
+        <button data-dash-tab="system" class="dash-tab flex-1 py-2 transition flex items-center justify-center gap-1.5">
+          <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
+          <span class="text-[9px] uppercase tracking-wider font-bold">System</span>
+        </button>
+      </div>
+
+      <!-- Dashboard Tab Views Container -->
+      <div id="dash-body" class="flex-1 overflow-y-auto p-4 space-y-4">
+        
+        <!-- Browser View -->
+        <div id="dash-view-browser" class="dash-view space-y-3">
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-mono font-bold uppercase tracking-wider text-white">Browser Control</span>
+            <button id="dash-b-help" class="text-dim hover:text-white transition" title="How browser control works"><i data-lucide="circle-help" class="w-3.5 h-3.5"></i></button>
+            <span id="dash-b-status" class="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-dim border border-edge">CDP Session</span>
+          </div>
+          
+          <!-- Address Bar -->
+          <div class="flex gap-1.5">
+            <input id="dash-b-url" placeholder="http://localhost:3000" class="flex-1 bg-zinc-900 border border-edge rounded-full px-3.5 py-2 text-xs font-mono text-white focus:outline-none focus:border-zinc-500" />
+            <button id="dash-b-open" class="px-3.5 py-2 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Go</button>
+            <button id="dash-b-live-btn" class="px-2.5 py-2 rounded-full border border-edge text-dim hover:text-white hover:bg-zinc-900 transition" title="Toggle live view (stream the page while the agent works)"><i data-lucide="eye" class="w-4 h-4"></i></button>
+            <button id="dash-b-shot" class="px-2.5 py-2 rounded-full border border-edge text-dim hover:text-white hover:bg-zinc-900 transition" title="Refresh screenshot & content"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button>
+            <button id="dash-b-close" class="px-2.5 py-2 rounded-full border border-edge text-dim hover:text-danger hover:border-danger transition" title="Close controlled browser"><i data-lucide="x-circle" class="w-4 h-4"></i></button>
+          </div>
+
+          <!-- What the agent is doing in the browser right now -->
+          <div id="dash-b-action" class="hidden items-center gap-2 text-[11px] font-mono text-white bg-zinc-900 border border-edge rounded-full px-3.5 py-1.5">
+            <span class="spin shrink-0"></span><span id="dash-b-action-text" class="truncate"></span>
+          </div>
+
+          <div id="dash-b-meta" class="text-[11px] font-mono text-zinc-400 break-all bg-zinc-950 px-3 py-1.5 rounded-xl"></div>
+
+          <!-- Viewport Box -->
+          <div id="dash-b-viewport" class="rounded-2xl border border-edge bg-zinc-950 overflow-hidden min-h-[220px] flex flex-col items-center justify-center relative">
+            <div id="dash-b-live" class="hidden absolute top-2.5 left-2.5 z-10 items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-white bg-black/70 backdrop-blur border border-edge rounded-full px-2.5 py-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-danger animate-pulse"></span> live
+            </div>
+            <div id="dash-b-viewport-empty" class="p-6 text-center text-dim text-xs space-y-1.5">
+              <i data-lucide="globe" class="w-8 h-8 mx-auto stroke-[1.5] text-zinc-700"></i>
+              <p>No active browser viewport.</p>
+              <p class="text-[10px] text-zinc-650">Open a URL or ask the agent to browse a website.</p>
+            </div>
+            <img id="dash-b-viewport-img" class="w-full h-auto object-contain hidden" alt="Browser screenshot" />
+          </div>
+
+          <!-- Page Text (Scrollable drawer) -->
+          <div class="border border-edge rounded-2xl overflow-hidden bg-zinc-950">
+            <button id="dash-b-text-toggle" class="w-full flex items-center justify-between px-4 py-2 text-xs font-bold text-dim bg-zinc-900/60 border-b border-edge/60 hover:text-white transition">
+              <span>PAGE TEXT CONTENTS</span>
+              <i data-lucide="chevron-down" class="w-4 h-4 tr-icon"></i>
+            </button>
+            <div id="dash-b-view" class="hidden p-3.5 max-h-48 overflow-y-auto text-[11px] font-mono text-zinc-400 whitespace-pre-wrap leading-relaxed"></div>
+          </div>
+        </div>
+
+        <!-- Runtime View (Servers & Ports) -->
+        <div id="dash-view-runtime" class="dash-view space-y-5 hidden">
+          <!-- Dev Servers -->
+          <div class="space-y-2">
+            <h3 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5"><i data-lucide="server" class="w-3.5 h-3.5"></i> Background Servers</h3>
+            <div id="dash-servers-list" class="space-y-2"></div>
+          </div>
+          <!-- Ports -->
+          <div class="space-y-2 border-t border-edge pt-4">
+            <h3 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5"><i data-lucide="plug-zap" class="w-3.5 h-3.5"></i> TCP Port Manager</h3>
+            <div id="dash-ports-list" class="space-y-1.5"></div>
+          </div>
+        </div>
+
+        <!-- Profiles View (Styles & Conventions) -->
+        <div id="dash-view-profiles" class="dash-view space-y-4 hidden">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5"><i data-lucide="user-round-cog" class="w-3.5 h-3.5"></i> Coding Profiles</h3>
+          <div id="dash-profiles-list" class="space-y-1.5"></div>
+          
+          <div class="border-t border-edge pt-4 space-y-2">
+            <h4 class="text-[11px] font-bold text-dim uppercase tracking-wider">Learn Custom Profile</h4>
+            <div class="flex gap-2">
+              <input id="dash-learn-name" placeholder="new profile name (e.g. next)" class="flex-1 bg-zinc-900 border border-edge rounded-full px-3.5 py-2 text-xs text-white focus:outline-none focus:border-zinc-500" />
+              <button id="dash-learn-go" class="px-4 py-2 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Learn</button>
+            </div>
+            <p class="text-[10px] text-dim">Scans project stack & directory layout to create durable instructions for the agent.</p>
+          </div>
+        </div>
+
+        <!-- System View (Specs & Models) -->
+        <div id="dash-view-system" class="dash-view space-y-4 hidden">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5"><i data-lucide="cpu" class="w-3.5 h-3.5"></i> System Hardware</h3>
+          <div id="dash-system-content" class="space-y-2"></div>
+        </div>
+
+      </div>
+    </aside>
+
   </div>
 
+  <!-- Backdrop for mobile drawers -->
+  <div id="backdrop" class="hidden fixed inset-0 bg-black/60 z-30 backdrop-blur-sm"></div>
+
   <!-- Modal host -->
-  <div id="modal" class="hidden fixed inset-0 z-50 grid place-items-center bg-black/50 backdrop-blur-sm p-4">
-    <div id="modal-card" class="w-full max-w-lg max-h-[80vh] overflow-hidden rounded-2xl border border-edge bg-surface shadow-2xl animate-pop flex flex-col"></div>
+  <div id="modal" class="hidden fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm p-4 animate-fadein">
+    <div id="modal-card" class="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-3xl border border-edge bg-surface shadow-2xl animate-pop flex flex-col"></div>
   </div>
 
   <script src="/app.js"></script>

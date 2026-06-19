@@ -1,51 +1,367 @@
-/* Complements Tailwind (loaded via CDN): markdown prose, scrollbars, the
-   streaming caret, and a couple of component classes used from app.js. */
+/* Grayscale stylesheet for local-cli web UI — floating rounded panels on a
+   near-black backdrop, pill controls, soft edges. */
 
-body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-
-/* Sidebar action buttons + mode buttons (applied via class names in markup) */
-.side-act {
-  display: flex; align-items: center; gap: 6px; justify-content: center;
-  font-size: 12px; padding: 7px 8px; border-radius: 9px;
-  border: 1px solid #2a2e42; color: #c0caf5; background: #1f2335; transition: .15s;
+body {
+  font-family: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Darker than the panels so the rounded columns visibly float. */
+  background: radial-gradient(1200px 700px at 50% -10%, #0d0d0f 0%, #060607 60%) fixed, #060607;
+  color: #f4f4f5;
 }
-.side-act:hover { border-color: #7aa2f7; color: #fff; }
-.mode-btn { color: #565f89; transition: .15s; }
-.mode-btn:hover { color: #c0caf5; }
-.mode-btn.active { background: #7aa2f7; color: #16161e; font-weight: 600; }
-.mode-btn[data-mode="plan"].active { background: #7dcfff; }
-.mode-btn[data-mode="auto"].active { background: #e0af68; }
 
-/* Markdown content */
-.prose { word-wrap: break-word; }
-.prose p { margin: 0 0 10px; }
-.prose p:last-child { margin-bottom: 0; }
-.prose h1, .prose h2, .prose h3 { margin: 14px 0 6px; line-height: 1.25; font-weight: 700; }
-.prose h1 { font-size: 1.25rem; } .prose h2 { font-size: 1.12rem; } .prose h3 { font-size: 1rem; }
-.prose ul, .prose ol { margin: 6px 0; padding-left: 22px; }
-.prose li { margin: 2px 0; }
-.prose code.inline { background: #24283b; padding: 1px 6px; border-radius: 6px; font-family: var(--mono, monospace); font-size: 13px; color: #73daca; }
-.prose pre { background: #16161e; border: 1px solid #2a2e42; border-radius: 10px; padding: 12px 14px; overflow-x: auto; margin: 8px 0; }
-.prose pre code { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace; font-size: 13px; color: #b9c2e8; }
-.prose a { color: #7dcfff; text-decoration: underline; }
-.prose strong { color: #fff; }
-.caret { display: inline-block; width: 7px; height: 1.05em; background: #7aa2f7; vertical-align: text-bottom; margin-left: 2px; animation: blink 1s step-end infinite; }
-@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+/* Mode Buttons Segmented Selector (pill) */
+.mode-btn {
+  color: #a1a1aa;
+  cursor: pointer;
+  border-radius: 9999px;
+  transition: all 0.15s ease;
+}
+.mode-btn:hover {
+  color: #ffffff;
+  background-color: #1c1c1f;
+}
+.mode-btn.active {
+  background-color: #ffffff;
+  color: #000000;
+  font-weight: 600;
+}
 
-/* Think block */
-.think-block { color: #565f89; font-style: italic; border-left: 2px solid #2a2e42; padding-left: 10px; margin: 6px 0; white-space: pre-wrap; font-size: 13.5px; }
+/* Dashboard Tabs (pill chips) */
+.dash-tab {
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  color: #8e8e93;
+  cursor: pointer;
+}
+.dash-tab:hover {
+  color: #ffffff;
+  background-color: #18181b;
+}
+.dash-tab.active {
+  color: #ffffff;
+  background-color: #1f1f23;
+  border-color: #2a2a2d;
+}
 
-/* Tool body shimmer skeleton */
-.skeleton { position: relative; overflow: hidden; background: #1f2335; border-radius: 6px; }
-.skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, #2a2e4255, transparent); animation: shimmer 1.2s infinite; }
-@keyframes shimmer { 100% { transform: translateX(100%); } }
+/* Markdown Prose Styling */
+.prose {
+  word-wrap: break-word;
+  line-height: 1.6;
+}
+.prose p {
+  margin: 0 0 12px;
+  color: #e4e4e7;
+}
+.prose p:last-child {
+  margin-bottom: 0;
+}
+.prose h1, .prose h2, .prose h3 {
+  margin: 18px 0 8px;
+  line-height: 1.3;
+  font-weight: 700;
+  color: #ffffff;
+}
+.prose h1 { font-size: 1.3rem; border-b: 1px solid #2a2a2d; padding-bottom: 4px; }
+.prose h2 { font-size: 1.15rem; }
+.prose h3 { font-size: 1.05rem; }
+.prose ul, .prose ol {
+  margin: 8px 0;
+  padding-left: 20px;
+  color: #e4e4e7;
+}
+.prose li {
+  margin: 4px 0;
+}
+.prose code.inline {
+  background: #27272a;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: #ffffff;
+  border: 1px solid #3f3f46;
+}
+.prose pre {
+  background: #18181b;
+  border: 1px solid #2a2a2d;
+  border-radius: 14px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.prose pre code {
+  font-family: "Geist Mono", "JetBrains Mono", Consolas, monospace;
+  font-size: 12.5px;
+  color: #e4e4e7;
+}
+.prose a {
+  color: #ffffff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prose a:hover {
+  text-decoration-color: #a1a1aa;
+}
+.prose strong {
+  color: #ffffff;
+  font-weight: 600;
+}
 
-/* Scrollbars */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #2c314a; border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: #39406090; }
-::-webkit-scrollbar-track { background: transparent; }
+/* Empty-chat placeholder (pure CSS — the JS clears #messages freely) */
+#messages:empty::before {
+  content: "◆";
+  display: block;
+  text-align: center;
+  margin-top: 26vh;
+  font-size: 30px;
+  color: #3f3f46;
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+}
+#messages:empty::after {
+  content: "What are we building today?";
+  display: block;
+  text-align: center;
+  margin-top: 12px;
+  color: #8e8e93;
+  font-size: 13.5px;
+}
 
-.spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid #e0af68; border-top-color: transparent; animation: rot .7s linear infinite; }
-@keyframes rot { to { transform: rotate(360deg); } }
+/* Streaming Text Caret */
+.caret {
+  display: inline-block;
+  width: 6px;
+  height: 1.1em;
+  background: #ffffff;
+  vertical-align: text-bottom;
+  margin-left: 2.5px;
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Collapsible Think Section (Accordion) */
+.think-container {
+  border: 1px solid #2a2a2d;
+  border-radius: 14px;
+  background-color: #121212;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.think-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8e8e93;
+  cursor: pointer;
+  background-color: #18181b;
+  user-select: none;
+  transition: background-color 0.15s ease;
+}
+.think-header:hover {
+  background-color: #222225;
+  color: #ffffff;
+}
+.think-block {
+  padding: 12px;
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: #a1a1aa;
+  background-color: #0c0c0e;
+  border-top: 1px solid #2a2a2d;
+  white-space: pre-wrap;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Spinner and Loaders */
+.spin {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  border-top-color: transparent;
+  animation: rot 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes rot {
+  to { transform: rotate(360deg); }
+}
+
+/* Skelton Loading Shimmer */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: #18181b;
+  border-radius: 6px;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, #27272a88, transparent);
+  animation: shimmer 1.2s infinite;
+}
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+
+/* Modal animation overrides */
+@keyframes fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fadein {
+  animation: fadein 0.16s ease-out forwards;
+}
+
+/* Address bar close button hover */
+.hover\:border-danger:hover {
+  border-color: #ef4444 !important;
+}
+.hover\:text-danger:hover {
+  color: #ef4444 !important;
+}
+
+/* Visual Viewport scroll styling */
+#dash-b-viewport img {
+  max-height: 380px;
+  width: auto;
+  margin: 0 auto;
+}
+
+/* Responsive adjustments */
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@media (max-width: 1024px) {
+  #sidebar:not(.hidden) {
+    position: fixed !important;
+    top: 12px;
+    left: 12px;
+    bottom: 12px;
+    width: 280px;
+    z-index: 40;
+    height: calc(100% - 24px);
+    background-color: #121212 !important; /* Ensure it's opaque */
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7), 0 8px 10px -6px rgba(0, 0, 0, 0.7);
+    animation: slideInLeft 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+  #dashboard:not(.hidden) {
+    position: fixed !important;
+    top: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: 340px;
+    z-index: 40;
+    height: calc(100% - 24px);
+    background-color: #121212 !important; /* Ensure it's opaque */
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7), 0 8px 10px -6px rgba(0, 0, 0, 0.7);
+    animation: slideInRight 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Header layout scaling */
+  header {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+    gap: 6px !important;
+  }
+  
+  /* Model select max width */
+  #model {
+    max-width: 130px !important;
+    font-size: 10px !important;
+    padding-left: 8px !important;
+    padding-right: 20px !important;
+  }
+  
+  /* Mode buttons scaling */
+  #mode {
+    font-size: 10px !important;
+  }
+  #mode button {
+    padding: 2px 8px !important;
+  }
+  
+  /* Think button text & padding scaling */
+  #think-btn {
+    font-size: 10px !important;
+    padding: 4px 8px !important;
+  }
+  
+  /* Context gauge: hide raw tokens count, keep percentage */
+  #ctx-used, #ctx-used + span, #ctx-limit {
+    display: none !important;
+  }
+}
+
+@media (max-width: 640px) {
+  #sidebar:not(.hidden) {
+    left: 8px;
+    width: calc(100% - 16px);
+    height: calc(100% - 16px);
+    top: 8px;
+  }
+  #dashboard:not(.hidden) {
+    right: 8px;
+    width: calc(100% - 16px);
+    height: calc(100% - 16px);
+    top: 8px;
+  }
+  
+  /* Footer Form Inputs and Buttons */
+  #form {
+    gap: 8px !important;
+  }
+  #send, #stop {
+    width: 2.75rem !important; /* circular button size (h-11 is 2.75rem) */
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    justify-content: center !important;
+  }
+  #send .send-text, #stop .stop-text {
+    display: none !important;
+  }
+  #input {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+    border-radius: 20px !important;
+  }
+  
+  /* Ext badge text scaling */
+  #ext-badge .ext-text {
+    display: none;
+  }
+}

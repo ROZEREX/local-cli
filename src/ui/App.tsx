@@ -6,8 +6,10 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { getConfig, saveConfig } from "../config";
 import { systemPrompt, type Mode } from "../prompt";
 import { chat, resetClient, estimateTokens, summarizeConversation, compactHistory, warmUp } from "../llm";
-import { listOllamaModelsDetailed, modelHint, modelInfo } from "../ollama";
+import { listOllamaModelsWithContext, modelHint, modelInfo, modelDiskSize, agentFitnessWarning } from "../ollama";
+import { modelFitWarning } from "../sysinfo";
 import { buildDiffView, type DiffView } from "../diff";
+import { computeHunks, applyHunks, type Hunk } from "../hunks";
 import { ThinkSplitter } from "../think";
 import { isCommand, runCommand, commandList, type CommandContext } from "../commands";
 import {
@@ -36,7 +38,13 @@ type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : nev
 type ItemInput = DistributiveOmit<Item, "id">;
 
 type Overlay =
-  | { kind: "permission"; tool: string; detail: string; diff?: DiffView; resolve: (ok: boolean) => void }
+  | {
+      kind: "permission"; tool: string; detail: string; diff?: DiffView;
+      // For partial (hunk-level) approval of file edits:
+      hunks?: Hunk[];
+      partialTexts?: { oldText: string; newText: string; argKey: "new_string" | "content"; args: any };
+      resolve: (ok: boolean | { args: any }) => void;
+    }
   | { kind: "plan" }
   | { kind: "model"; models: string[]; hints: Record<string, string>; loading: boolean }
   | { kind: "chats"; sessions: SessionMeta[] }
@@ -62,10 +70,25 @@ function summarize(name: string, argsJson: string): string {
     case "ask_user": return a.question ?? "";
     case "list_ports": return "";
     case "kill_port": return a.port ? `:${a.port}` : "";
-    case "browser_open": return a.url ?? "";
-    case "browser_click": return a.target ?? a.selector ?? a.text ?? "";
+    case "browser_open": case "page_open": case "page_navigate": return a.url ?? "";
+    case "browser_click": case "page_click": case "page_highlight": return a.target ?? a.selector ?? a.text ?? "";
+    case "browser_type": case "page_type": return `${a.target ?? ""}: "${a.text ?? ""}"`;
+    case "browser_scroll": case "page_scroll": return a.to ?? "down";
+    case "page_find": return a.query ?? "";
     case "browser_screenshot": case "screenshot": return a.question ?? "";
-    case "browser_read": case "browser_close": return "";
+    case "browser_read": case "browser_close": case "page_read": return "";
+    case "browser_console": case "browser_network": case "browser_performance": return "";
+    case "search_code": return a.query ?? "";
+    case "index_workspace": return "rebuild index";
+    case "remember": return (a.content ?? "").slice(0, 60);
+    case "recall": return "project memory";
+    case "task_add": return a.text ?? "";
+    case "task_done": return String(a.task ?? a.index ?? "");
+    case "task_list": return "";
+    case "spawn_agents": {
+      const t = Array.isArray(a.tasks) ? a.tasks : [];
+      return `${t.length || "?"} agent${t.length === 1 ? "" : "s"}`;
+    }
     default: return argsJson;
   }
 }
@@ -82,6 +105,11 @@ function permDetail(name: string, args: any): string {
   if (name === "browser_open") return `open ${args.url} in a controlled browser`;
   if (name === "browser_click") return `click "${args.target ?? args.selector ?? args.text}" in the browser`;
   if (name === "screenshot") return `capture your screen and analyze it with the vision model`;
+  if (name === "spawn_agents") {
+    const t = Array.isArray(args.tasks) ? args.tasks : [];
+    return `spawn ${t.length} sub-agent${t.length === 1 ? "" : "s"}${args.allow_writes ? " (WITH write access)" : " (read-only)"}:\n` +
+      t.map((x: string, i: number) => `  ${String.fromCharCode(65 + i)}: ${String(x).slice(0, 80)}`).join("\n");
+  }
   return JSON.stringify(args);
 }
 
@@ -177,6 +205,7 @@ export function App({ autoResume = false }: AppProps) {
   const [usage, setUsage] = useState({ inTok: 0, outTok: 0, tps: 0 }); // session totals + last speed
   const [liveOut, setLiveOut] = useState(0);  // live output tokens for the in-flight turn
   const [elapsed, setElapsed] = useState(0);  // seconds the current turn has been running
+  const [phase, setPhase] = useState<"loading" | "prefill" | "generating" | null>(null); // what the model is doing right now
   const [mode, setModeState] = useState<Mode>((cfg.mode as Mode) ?? "normal");
   const [, force] = useReducer((x: number) => x + 1, 0);
 
@@ -198,23 +227,33 @@ export function App({ autoResume = false }: AppProps) {
   const recomputeTokens = () => setTokens(estimateTokens(historyRef.current));
 
   // Keep the context window in step with the selected model's NATIVE limit.
-  // On a model switch we set it to the model's native length; on startup we only
-  // clamp DOWN if the saved value exceeds what the model actually supports (so a
-  // 131k setting left over from another model doesn't give a wrong % or over-ask
-  // num_ctx). A user's smaller custom value is respected.
+  // We ALWAYS adopt the model's full native context — never cap it — so a large-
+  // context model gets the window it actually supports. (A too-small num_ctx
+  // silently truncates the prompt, which is what made big-context models return
+  // an empty response.) This runs on startup and on every model switch, setting
+  // the window to exactly the native length in both directions — so a leftover
+  // value from a different model (too big OR too small) is corrected.
   const syncContextForModel = async (m: string, opts: { force: boolean }) => {
     try {
       const info = await modelInfo(getConfig().baseUrl, m);
       const native = info?.contextLength;
       if (!native) return;
       const current = getConfig().contextWindow;
-      const next = opts.force ? native : Math.min(current, native);
-      if (next !== current) {
-        saveConfig({ contextWindow: next });
-        setContextWindow(next);
-        if (opts.force) commit({ kind: "system", text: `Context window set to ${next.toLocaleString()} tokens for ${m} (its native limit).` });
+      if (native !== current) {
+        saveConfig({ contextWindow: native });
+        setContextWindow(native);
+        if (opts.force) {
+          commit({ kind: "system", text: `Context window set to ${native.toLocaleString()} tokens for ${m} (its native limit).` });
+        }
       } else {
         setContextWindow(current);
+      }
+      // Proactive heads-up if this model (weights + native KV cache) won't fit
+      // the GPU/RAM budget — so a too-big model doesn't silently thrash.
+      if (opts.force) {
+        const size = await modelDiskSize(getConfig().baseUrl, m);
+        const warn = modelFitWarning(size, native);
+        if (warn) commit({ kind: "system", text: warn, tone: "error" });
       }
     } catch { /* model info unavailable — keep the current setting */ }
   };
@@ -235,9 +274,9 @@ export function App({ autoResume = false }: AppProps) {
     historyRef.current[0] = { role: "system", content: systemPrompt({ mode: m }) };
   };
 
-  // shift+tab cycles: normal → plan → auto-accept → normal.
+  // shift+tab cycles: normal → plan → auto-accept → debug → normal.
   const cycleMode = () => {
-    const order: Mode[] = ["normal", "plan", "auto"];
+    const order: Mode[] = ["normal", "plan", "auto", "debug"];
     const next = order[(order.indexOf(modeRef.current) + 1) % order.length]!;
     setMode(next);
   };
@@ -358,6 +397,7 @@ export function App({ autoResume = false }: AppProps) {
   const runTurn = async () => {
     setStatus("thinking");
     setLiveOut(0);
+    setPhase(null);
     turnHadAnswerRef.current = false;
     const ac = new AbortController();
     abortRef.current = ac;
@@ -373,84 +413,79 @@ export function App({ autoResume = false }: AppProps) {
       force();
     };
 
-    let retries = 0;
-    while (retries < 2) {
-      if (ac.signal.aborted) break;
-      try {
-        historyRef.current = await chat(
-          historyRef.current,
-          {
-            onText: (c) => writeSeg(c),
-            onToolCall: (name, argsJson) => {
-              writeSeg(null);
-              flushActive();
-              const summary = summarize(name, argsJson);
-              currentToolRef.current = { name, summary };
-              setLiveTool({ name, summary, status: "running" });
-            },
-            onToolResult: (name, result) => {
-              const summary = currentToolRef.current?.summary ?? "";
-              setLiveTool(null);
-              commit({
-                kind: "tool",
-                tool: { name, summary, result, status: result.includes("denied by user") ? "denied" : "done" },
-              });
-            },
-            onError: (e) => commit({ kind: "system", text: e.message, tone: "error" }),
-            onNotice: (msg) => commit({ kind: "system", text: msg }),
-            onUsage: (u) => setUsage(prev => ({ inTok: prev.inTok + u.inputTokens, outTok: prev.outTok + u.outputTokens, tps: u.tokPerSec || prev.tps })),
-            onProgress: (t) => setLiveOut(t),
-            requestPermission: async (name, args) => {
-              if (sessionAllowRef.current.has(name)) return true;
-              return new Promise<boolean>((res) => {
-                setOverlay({
-                  kind: "permission",
-                  tool: name,
-                  detail: permDetail(name, args),
-                  diff: computeDiff(name, args, getConfig().cwd),
-                  resolve: res,
-                });
-              });
-            },
-            requestChoice: async (question, opts) => {
-              return new Promise<string>((res) => {
-                setOverlay({ kind: "choice", question, options: opts, resolve: res });
-              });
-            },
+    // A single turn. chat() owns its own internal loop and, crucially, the
+    // empty-response handling (retry-on-transient, never compact) — so there is
+    // no retry/compaction scaffolding here. Compaction is purely a token-budget
+    // concern, handled by maybeAutoCompact() after the turn.
+    try {
+      historyRef.current = await chat(
+        historyRef.current,
+        {
+          onText: (c) => writeSeg(c),
+          onToolCall: (name, argsJson) => {
+            writeSeg(null);
+            flushActive();
+            const summary = summarize(name, argsJson);
+            currentToolRef.current = { name, summary };
+            setLiveTool({ name, summary, status: "running" });
           },
-          { signal: ac.signal, planMode: modeRef.current === "plan", autoAccept: modeRef.current === "auto" }
-        );
-
-        // Check if we got a response (i.e. assistant message was pushed to history)
-        const lastMsg = historyRef.current[historyRef.current.length - 1];
-        const gotResponse = lastMsg && lastMsg.role === "assistant";
-        if (gotResponse || ac.signal.aborted) {
-          break;
-        }
-
-        // No response returned (empty response). Attempt auto-compaction.
-        if (historyRef.current.length > 2) {
-          commit({ kind: "system", text: "The model returned an empty response. Automatically compacting conversation history to free up context..." });
-          const before = estimateTokens(historyRef.current);
-          const summary = await summarizeConversation(historyRef.current);
-          historyRef.current = compactHistory(historyRef.current, summary);
-          const after = estimateTokens(historyRef.current);
-          commit({ kind: "system", text: `Compacted — saved ~${(before - after).toLocaleString()} tokens (now ~${after.toLocaleString()}). Retrying turn...` });
-          recomputeTokens();
-          autosave();
-          retries++;
-        } else {
-          break; // cannot compact further
-        }
-      } catch (e: any) {
-        commit({ kind: "system", text: `Fatal error: ${e.message}`, tone: "error" });
-        break;
-      }
+          onToolResult: (name, result) => {
+            const summary = currentToolRef.current?.summary ?? "";
+            setLiveTool(null);
+            commit({
+              kind: "tool",
+              tool: { name, summary, result, status: result.includes("denied by user") ? "denied" : "done" },
+            });
+          },
+          onError: (e) => commit({ kind: "system", text: e.message, tone: "error" }),
+          onNotice: (msg) => commit({ kind: "system", text: msg }),
+          onUsage: (u) => setUsage(prev => ({ inTok: prev.inTok + u.inputTokens, outTok: prev.outTok + u.outputTokens, tps: u.tokPerSec || prev.tps })),
+          onProgress: (t) => setLiveOut(t),
+          onStatus: (p) => setPhase(p),
+          requestPermission: async (name, args) => {
+            if (sessionAllowRef.current.has(name)) return true;
+            return new Promise<boolean | { args: any }>((res) => {
+              // For file edits, prepare hunk-level data so the user can apply
+              // only part of the change ([s] in the prompt).
+              let hunks: Hunk[] | undefined;
+              let partialTexts: { oldText: string; newText: string; argKey: "new_string" | "content"; args: any } | undefined;
+              try {
+                if (name === "edit_file" && typeof args.old_string === "string" && typeof args.new_string === "string") {
+                  partialTexts = { oldText: args.old_string, newText: args.new_string, argKey: "new_string", args };
+                } else if (name === "write_file" && typeof args.content === "string") {
+                  const fp = resolve(getConfig().cwd, args.path);
+                  const existing = existsSync(fp) && statSync(fp).isFile() ? readFileSync(fp, "utf-8") : "";
+                  if (existing) partialTexts = { oldText: existing, newText: args.content, argKey: "content", args };
+                }
+                if (partialTexts) hunks = computeHunks(partialTexts.oldText, partialTexts.newText);
+              } catch { /* no partial support for this call */ }
+              setOverlay({
+                kind: "permission",
+                tool: name,
+                detail: permDetail(name, args),
+                diff: computeDiff(name, args, getConfig().cwd),
+                hunks,
+                partialTexts,
+                resolve: res,
+              });
+            });
+          },
+          requestChoice: async (question, opts) => {
+            return new Promise<string>((res) => {
+              setOverlay({ kind: "choice", question, options: opts, resolve: res });
+            });
+          },
+        },
+        { signal: ac.signal, planMode: modeRef.current === "plan", autoAccept: modeRef.current === "auto" }
+      );
+    } catch (e: any) {
+      commit({ kind: "system", text: `Fatal error: ${e.message}`, tone: "error" });
     }
     writeSeg(null);
     flushActive();
     abortRef.current = null;
     setStatus("idle");
+    setPhase(null);
     recomputeTokens();
 
     // After a plan-mode turn that produced a plan, offer to approve it.
@@ -469,6 +504,17 @@ export function App({ autoResume = false }: AppProps) {
     }
     overlay.resolve(d !== "no");
     setOverlay(null);
+  };
+
+  // Apply only the diff hunks the user selected: rebuild the new content from
+  // the original + chosen hunks and hand the modified args back to the tool.
+  const decidePartial = (selected: number[]) => {
+    if (overlay?.kind !== "permission" || !overlay.partialTexts) return;
+    const { oldText, newText, argKey, args } = overlay.partialTexts;
+    const rebuilt = applyHunks(oldText, newText, new Set(selected));
+    overlay.resolve({ args: { ...args, [argKey]: rebuilt } });
+    setOverlay(null);
+    commit({ kind: "system", text: `Applying ${selected.length} of ${overlay.hunks?.length ?? "?"} hunks (the rest were rejected).` });
   };
 
   const decidePlan = (d: "approve" | "keep" | "cancel") => {
@@ -517,7 +563,7 @@ export function App({ autoResume = false }: AppProps) {
       // list is only a fallback for when Ollama isn't reachable; we don't persist
       // or merge it, so it can't drift from reality.
       setOverlay({ kind: "model", models: c.models, hints: {}, loading: true });
-      listOllamaModelsDetailed(c.baseUrl)
+      listOllamaModelsWithContext(c.baseUrl)
         .then(live => setOverlay(o => {
           if (o?.kind !== "model") return o;
           const names = live.length ? live.map(m => m.name) : c.models;
@@ -533,6 +579,7 @@ export function App({ autoResume = false }: AppProps) {
     runInit,
     learnProfile,
     openProfilePicker,
+    runAgent: runAgentTask,
   });
 
   const onSubmit = async (raw: string) => {
@@ -606,7 +653,14 @@ export function App({ autoResume = false }: AppProps) {
           mode={mode}
         />
         {overlay?.kind === "permission" ? (
-          <PermissionPrompt name={overlay.tool} detail={overlay.detail} diff={overlay.diff} onDecide={decidePermission} />
+          <PermissionPrompt
+            name={overlay.tool}
+            detail={overlay.detail}
+            diff={overlay.diff}
+            hunks={overlay.hunks}
+            onPartial={overlay.partialTexts ? decidePartial : undefined}
+            onDecide={decidePermission}
+          />
         ) : overlay?.kind === "plan" ? (
           <PlanApproval onDecide={decidePlan} />
         ) : overlay?.kind === "model" ? (
@@ -617,7 +671,7 @@ export function App({ autoResume = false }: AppProps) {
               const cur = m === model ? "● current" : "";
               return { label: m, value: m, hint: [cur, spec].filter(Boolean).join("   ") };
             })}
-            onSelect={(m) => { saveConfig({ model: m }); resetClient(); setModel(m); setOverlay(null); commit({ kind: "system", text: `Model set to ${m}` }); void syncContextForModel(m, { force: true }); }}
+            onSelect={(m) => { saveConfig({ model: m }); resetClient(); setModel(m); setOverlay(null); commit({ kind: "system", text: `Model set to ${m}` }); void syncContextForModel(m, { force: true }); void agentFitnessWarning(getConfig().baseUrl, m).then(w => { if (w) commit({ kind: "system", text: w }); }).catch(() => {}); }}
             onCancel={() => setOverlay(null)}
           />
         ) : overlay?.kind === "chats" ? (
@@ -651,14 +705,14 @@ export function App({ autoResume = false }: AppProps) {
           />
         ) : status === "idle" ? (
           <PromptInput
-            color={mode === "plan" ? theme.color.accent : mode === "auto" ? theme.color.warn : theme.color.user}
-            placeholder={mode === "plan" ? "describe what to plan…" : mode === "auto" ? "auto-accept on — message…" : "message, or /help…  (↑ history · Ctrl+V paste)"}
+            color={mode === "plan" ? theme.color.accent : mode === "auto" ? theme.color.warn : mode === "debug" ? theme.color.error : theme.color.user}
+            placeholder={mode === "plan" ? "describe what to plan…" : mode === "auto" ? "auto-accept on — message…" : mode === "debug" ? "debug mode — describe the bug or what to verify…" : "message, or /help…  (↑ history · Ctrl+V paste)"}
             onSubmit={onSubmit}
             history={inputHistoryRef}
             commands={commandList()}
           />
         ) : (
-          <GeneratingLine tokens={liveOut} elapsed={elapsed} />
+          <GeneratingLine tokens={liveOut} elapsed={elapsed} phase={phase} thinking={!!activeThinking.trim() && !activeAnswer.trim()} />
         )}
       </Box>
     </Box>

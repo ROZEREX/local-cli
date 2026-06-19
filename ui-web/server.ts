@@ -13,19 +13,23 @@ import {
 import { getConfig, saveConfig } from "../src/config";
 import { systemPrompt, type Mode } from "../src/prompt";
 import { ThinkSplitter } from "../src/think";
-import { listOllamaModelsDetailed, modelInfo } from "../src/ollama";
+import { listOllamaModelsDetailed, modelInfo, loadedModels, modelCapabilities, modelDiskSize } from "../src/ollama";
+import { analyzeImage } from "../src/vision";
 import {
   saveSession, listSessions, deleteSession, loadSession, newSessionId, deriveTitle, type Session,
 } from "../src/session";
 import {
-  listProfileNames, getActiveProfileName, readProfileByName, setActiveProfile,
+  listProfileNames, getActiveProfileName, readProfileByName, readActiveProfile, setActiveProfile,
   deleteProfileByName, learnProfileInstruction, profileFilePath, availablePackageManagers,
 } from "../src/profile";
 import { listServers, serverLogs, stopServer } from "../src/proc";
 import { listListeningPorts, killPort } from "../src/ports";
-import { systemInfo, recommendModels } from "../src/sysinfo";
+import { systemInfo, recommendModels, modelFitWarning } from "../src/sysinfo";
 import { listDirEntries, expandSelection, readFilesAsContext } from "../src/files";
-import { browserOpen, browserReadText, browserClose } from "../src/browser";
+import {
+  browserOpen, browserReadText, browserClose, browserScreenshot, evalJs,
+  browserStartScreencast, browserStopScreencast, browserIsOpen,
+} from "../src/browser";
 import { setExtension, resolveCommand, extensionConnected } from "../src/extbridge";
 
 const PUBLIC = join(import.meta.dir, "public");
@@ -41,12 +45,29 @@ interface WSData {
   seq: number;
   sessionId: string;
   createdAt: number;
+  // Fingerprint of the inputs that shape the system prompt (see runChat).
+  sysFp?: string;
 }
 
 const send = (ws: ServerWebSocket<WSData>, obj: any) => ws.send(JSON.stringify(obj));
 
 function freshSystem(mode: Mode): ChatCompletionMessageParam { return { role: "system", content: systemPrompt({ mode }) }; }
 function freshHistory(mode: Mode): ChatCompletionMessageParam[] { return [freshSystem(mode)]; }
+
+// Inputs that genuinely require a new system prompt. Rebuilding it on EVERY
+// turn (as we used to) embedded the live ports/servers list, which changes
+// between turns — and any change to the prompt prefix invalidates Ollama's
+// prompt cache, forcing a full re-prefill of the whole conversation each turn.
+// That made the web UI noticeably slower than the CLI. Now we rebuild only
+// when one of these actually changes.
+function systemFingerprint(mode: Mode): string {
+  const cfg = getConfig();
+  return [
+    mode, cfg.model, cfg.cwd, cfg.packageManager,
+    getActiveProfileName() ?? "", (readActiveProfile() ?? "").length,
+    extensionConnected() ? "ext" : "",
+  ].join("|");
+}
 
 function configPayload() {
   const cfg = getConfig();
@@ -56,12 +77,33 @@ function configPayload() {
     activeProfile: getActiveProfileName(), profiles: listProfileNames(),
     availablePM: availablePackageManagers(), mode: cfg.mode ?? "normal",
     extConnected: extensionConnected(),
+    keepAlive: cfg.keepAlive ?? "(ollama default, 5m)", numGpu: cfg.numGpu ?? null, numThread: cfg.numThread ?? null,
+    maxTokens: cfg.maxTokens, temperature: cfg.temperature,
   };
 }
 
 // Track web-UI sockets so we can tell them when the browser extension connects.
 const uiClients = new Set<ServerWebSocket<WSData>>();
 function broadcastConfig() { const p = { t: "config", config: configPayload() }; for (const c of uiClients) { try { c.send(JSON.stringify(p)); } catch {} } }
+
+// ── live browser view ──────────────────────────────────────────────────────
+// While the agent drives the controlled browser, stream CDP screencast frames
+// to every web-UI client so the user WATCHES the AI cursor click and type live
+// (instead of only seeing a stale screenshot after each action). Throttled to
+// ~4 fps — plenty for watching, light on the socket.
+let manualLive = false; // the user toggled live view on from the Browser tab
+let lastFrameAt = 0;
+function broadcastFrame(data: string) {
+  const now = Date.now();
+  if (now - lastFrameAt < 250) return;
+  lastFrameAt = now;
+  const p = JSON.stringify({ t: "browser_frame", data });
+  for (const c of uiClients) { try { c.send(p); } catch {} }
+}
+async function startLiveView(): Promise<boolean> {
+  if (!browserIsOpen()) return false;
+  try { await browserStartScreencast(broadcastFrame); return true; } catch { return false; }
+}
 
 function summarize(name: string, argsJson: string): string {
   let a: any = {};
@@ -78,7 +120,13 @@ function summarize(name: string, argsJson: string): string {
     case "kill_port": return a.port ? ":" + a.port : "";
     case "browser_open": return a.url ?? "";
     case "browser_click": return a.target ?? a.selector ?? a.text ?? "";
+    case "browser_type": return `${a.target ?? a.selector ?? ""}: "${a.text ?? ""}"`;
     case "browser_screenshot": case "screenshot": return a.question ?? "";
+    case "browser_scroll": case "page_scroll": return a.to ?? "down";
+    case "page_open": case "page_navigate": return a.url ?? "";
+    case "page_click": case "page_highlight": return a.target ?? "";
+    case "page_find": return a.query ?? "";
+    case "page_type": return `${a.target ?? ""}: "${a.text ?? ""}"`;
     default: return "";
   }
 }
@@ -88,6 +136,7 @@ function permDetail(name: string, a: any): string {
   if (name === "edit_file") return `edit ${a.path}`;
   if (name === "delete_file") return `delete ${a.path}`;
   if (name === "update_profile") return `save to coding profile`;
+  if (name === "browser_type" || name === "page_type") return `type "${a.text}" into ${a.target}`;
   return JSON.stringify(a);
 }
 
@@ -109,14 +158,35 @@ function autosave(ws: ServerWebSocket<WSData>) {
 }
 
 // Run one agent turn over the current history, streaming everything to the client.
-async function runChat(ws: ServerWebSocket<WSData>, userText: string, echo = true) {
+async function runChat(ws: ServerWebSocket<WSData>, userText: string, echo = true, images: string[] = []) {
   if (ws.data.busy) return;
   ws.data.busy = true;
   ws.data.abort = new AbortController();
-  if (echo) send(ws, { t: "user", text: userText });
-  // Rebuild the system prompt each turn so mode / profile / pm / thinking changes apply.
-  ws.data.history[0] = freshSystem(ws.data.mode);
-  ws.data.history.push({ role: "user", content: userText });
+  if (echo) send(ws, { t: "user", text: userText, images });
+  // Refresh the system prompt ONLY when its inputs changed (mode/profile/…) —
+  // a stable prompt keeps Ollama's prompt cache valid between turns.
+  const fp = systemFingerprint(ws.data.mode);
+  if (ws.data.sysFp !== fp) { ws.data.history[0] = freshSystem(ws.data.mode); ws.data.sysFp = fp; }
+
+  // Pasted images: hand them to the model directly if it has vision; otherwise
+  // describe them with the fallback vision model and attach the description.
+  if (images.length) {
+    const cfg = getConfig();
+    const caps = await modelCapabilities(cfg.baseUrl, cfg.model).catch(() => [] as string[]);
+    if (caps.includes("vision")) {
+      ws.data.history.push({ role: "user", content: userText, images } as any);
+    } else {
+      send(ws, { t: "notice", v: `"${cfg.model}" can't see images — describing them with a vision model instead.` });
+      let combined = userText;
+      for (let i = 0; i < images.length; i++) {
+        const desc = await analyzeImage(images[i]!, "Describe this image in detail (visible text, UI elements, layout, errors) for an agent that cannot see it.");
+        combined += `\n\n[Attached image ${i + 1}, described by a vision model]:\n${desc}`;
+      }
+      ws.data.history.push({ role: "user", content: combined });
+    }
+  } else {
+    ws.data.history.push({ role: "user", content: userText });
+  }
 
   const splitter = new ThinkSplitter();
   const emitText = (chunk: string | null) => {
@@ -131,9 +201,24 @@ async function runChat(ws: ServerWebSocket<WSData>, userText: string, echo = tru
       {
         onText: (c) => emitText(c),
         onToolCall: (name, args) => send(ws, { t: "tool_call", name, summary: summarize(name, args) }),
-        onToolResult: (name, result) => send(ws, { t: "tool_result", name, result }),
+        onToolResult: async (name, result) => {
+          send(ws, { t: "tool_result", name, result });
+          if (name.startsWith("browser_") && name !== "browser_close") {
+            // The browser is open now — start the live screencast so the user
+            // watches the rest of the agent's browsing in real time.
+            void startLiveView();
+            try {
+              const text = await browserReadText().catch(() => "");
+              const screenshot = await browserScreenshot().catch(() => "");
+              const url = await evalJs("document.location.href").catch(() => "");
+              const title = await evalJs("document.title").catch(() => "");
+              send(ws, { t: "browser_state", url, title, text, screenshot });
+            } catch {}
+          }
+        },
         onError: (e) => send(ws, { t: "error", v: e.message }),
         onNotice: (v) => send(ws, { t: "notice", v }),
+        onStatus: (phase) => send(ws, { t: "status", phase }),
         onUsage: (u) => send(ws, { t: "usage", inTok: u.inputTokens, outTok: u.outputTokens, tps: u.tokPerSec }),
         onProgress: (tok) => send(ws, { t: "progress", tok }),
         requestPermission: (name, args) => new Promise<boolean>((res) => {
@@ -153,6 +238,9 @@ async function runChat(ws: ServerWebSocket<WSData>, userText: string, echo = tru
   } finally {
     ws.data.busy = false;
     ws.data.abort = null;
+    // Stop the live screencast unless the user explicitly keeps it on — the
+    // last browser_state screenshot stays as the final frame.
+    if (!manualLive) void browserStopScreencast();
     send(ws, { t: "turn_end", mode: ws.data.mode });
     pushContext(ws);
     autosave(ws);
@@ -203,6 +291,11 @@ const handlers: any = {
     }
     if (url.pathname === "/api/ports") return Response.json(listListeningPorts());
     if (url.pathname === "/api/system") { const info = systemInfo(); return Response.json({ info, recommendations: recommendModels(info) }); }
+    if (url.pathname === "/api/loaded") {
+      // Models currently resident in Ollama's memory, with the GPU/RAM split so
+      // the UI can show when one spilled out of VRAM.
+      try { return Response.json(await loadedModels(getConfig().baseUrl)); } catch { return Response.json([]); }
+    }
     if (url.pathname === "/api/dir") {
       const p = url.searchParams.get("path") || getConfig().cwd;
       let dir = p;
@@ -217,6 +310,7 @@ const handlers: any = {
   },
 
   websocket: {
+    idleTimeout: 900, // 15 minutes (in seconds) to prevent disconnection during slow prefill/generations
     async open(ws: ServerWebSocket<WSData>) {
       if (ws.data.kind === "ext") {
         setExtension((obj) => { try { ws.send(JSON.stringify(obj)); } catch {} });
@@ -238,7 +332,14 @@ const handlers: any = {
       if (m.t === "cmdreply") { resolveCommand(m.id, m.result); return; }
       const cfg = getConfig();
       switch (m.t) {
-        case "chat": if (typeof m.text === "string" && m.text.trim()) void runChat(ws, m.text.trim()); break;
+        case "chat": {
+          const imgs: string[] = Array.isArray(m.images)
+            ? m.images.filter((x: any) => typeof x === "string" && x.length > 0 && x.length < 15_000_000).slice(0, 4)
+            : [];
+          const text = typeof m.text === "string" ? m.text.trim() : "";
+          if (text || imgs.length) void runChat(ws, text || "(attached image)", true, imgs);
+          break;
+        }
         case "permission": {
           if (m.approved && m.always && m.tool) {
             const cur = getConfig().alwaysAllow ?? [];
@@ -250,7 +351,7 @@ const handlers: any = {
         case "choice": { const r = ws.data.pending.get(m.id); if (r) { ws.data.pending.delete(m.id); r(String(m.answer ?? "")); } break; }
         case "interrupt": ws.data.abort?.abort(); break;
         case "new": newChat(ws); break;
-        case "set_mode": if (["normal", "plan", "auto"].includes(m.mode)) { ws.data.mode = m.mode; saveConfig({ mode: m.mode }); send(ws, { t: "mode", mode: m.mode }); } break;
+        case "set_mode": if (["normal", "plan", "auto", "debug"].includes(m.mode)) { ws.data.mode = m.mode; saveConfig({ mode: m.mode }); send(ws, { t: "mode", mode: m.mode }); } break;
         case "set_thinking": saveConfig({ thinking: !!m.on }); pushConfig(ws); break;
         case "set_pm": if (["auto", "bun", "npm", "pnpm", "yarn"].includes(m.pm)) { saveConfig({ packageManager: m.pm }); pushConfig(ws); } break;
         case "set_profile": if (typeof m.name === "string") { setActiveProfile(m.name); pushConfig(ws); send(ws, { t: "notice", v: `Active coding profile: ${m.name}` }); } break;
@@ -279,7 +380,18 @@ const handlers: any = {
           if (typeof m.model === "string") {
             saveConfig({ model: m.model }); resetClient();
             const info = await modelInfo(getConfig().baseUrl, m.model).catch(() => null);
-            if (info?.contextLength) saveConfig({ contextWindow: info.contextLength });
+            if (info?.contextLength) {
+              // Always adopt the model's full native context — never cap it, so a
+              // large-context model gets the window it supports (a too-small
+              // num_ctx silently truncates the prompt → empty responses).
+              saveConfig({ contextWindow: info.contextLength });
+              send(ws, { t: "notice", v: `Context window set to ${info.contextLength.toLocaleString()} tokens for ${m.model} (its native limit).` });
+            }
+            // Proactive heads-up if the model won't fit the GPU/RAM budget.
+            const size = await modelDiskSize(getConfig().baseUrl, m.model).catch(() => undefined);
+            const fitWarn = modelFitWarning(size, info?.contextLength);
+            if (fitWarn) send(ws, { t: "error", v: fitWarn });
+            void warmUp(); // pre-load the new model with the real options
             pushConfig(ws); pushContext(ws);
           }
           break;
@@ -325,9 +437,48 @@ const handlers: any = {
         }
         case "stop_server": { stopServer(String(m.id)); send(ws, { t: "servers", list: serverList() }); break; }
         case "servers": send(ws, { t: "servers", list: serverList() }); break;
-        case "browser_open": { try { const r = await browserOpen(String(m.url)); const text = await browserReadText().catch(() => ""); send(ws, { t: "browser_state", url: r.url, title: r.title, text }); } catch (e: any) { send(ws, { t: "browser_state", error: e.message }); } break; }
-        case "browser_shot": { try { const text = await browserReadText().catch(() => ""); send(ws, { t: "browser_state", text, refreshed: true }); } catch (e: any) { send(ws, { t: "browser_state", error: e.message }); } break; }
-        case "browser_close": { await browserClose().catch(() => {}); send(ws, { t: "browser_state", closed: true }); break; }
+        case "browser_open": {
+          try {
+            const r = await browserOpen(String(m.url));
+            const text = await browserReadText().catch(() => "");
+            const screenshot = await browserScreenshot().catch(() => "");
+            send(ws, { t: "browser_state", url: r.url, title: r.title, text, screenshot });
+          } catch (e: any) {
+            send(ws, { t: "browser_state", error: e.message });
+          }
+          break;
+        }
+        case "browser_shot": {
+          try {
+            const text = await browserReadText().catch(() => "");
+            const screenshot = await browserScreenshot().catch(() => "");
+            const url = await evalJs("document.location.href").catch(() => "");
+            const title = await evalJs("document.title").catch(() => "");
+            send(ws, { t: "browser_state", url, title, text, screenshot, refreshed: true });
+          } catch (e: any) {
+            send(ws, { t: "browser_state", error: e.message });
+          }
+          break;
+        }
+        case "browser_close": {
+          manualLive = false;
+          await browserStopScreencast().catch(() => {});
+          await browserClose().catch(() => {});
+          send(ws, { t: "browser_state", closed: true });
+          break;
+        }
+        case "browser_live": {
+          // User-driven live view toggle from the Browser tab.
+          if (m.on) {
+            if (await startLiveView()) { manualLive = true; send(ws, { t: "browser_live", on: true }); }
+            else send(ws, { t: "browser_state", error: "No controlled browser is open yet — open a URL first." });
+          } else {
+            manualLive = false;
+            await browserStopScreencast().catch(() => {});
+            send(ws, { t: "browser_live", on: false });
+          }
+          break;
+        }
         case "kill_port": { const r = killPort(Number(m.port)); send(ws, { t: "notice", v: r.ok ? `Freed port ${r.port} (killed ${r.killed.map(k => "PID " + k.pid).join(", ")}).` : `Nothing was listening on port ${m.port}.` }); send(ws, { t: "ports", list: listListeningPorts() }); break; }
         case "ports": send(ws, { t: "ports", list: listListeningPorts() }); break;
       }
@@ -374,7 +525,8 @@ function replayMessages(history: ChatCompletionMessageParam[]) {
   for (const m of history) {
     if (m.role === "user" && typeof m.content === "string") {
       if (m.content.startsWith("<tool_response") || m.content.startsWith("I'm attaching")) continue;
-      out.push({ role: "user", content: m.content });
+      const imgNote = (m as any).images?.length ? `  [${(m as any).images.length} image(s) attached]` : "";
+      out.push({ role: "user", content: m.content + imgNote });
     } else if (m.role === "assistant") {
       const tc = (m as any).tool_calls;
       if (typeof m.content === "string" && m.content.trim()) out.push({ role: "assistant", content: m.content });

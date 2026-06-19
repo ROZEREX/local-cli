@@ -74,6 +74,12 @@ const run = async () => {
   check("bash timeout returns a clear message", r.includes("timed out after") && !r.includes("ETIMEDOUT"), r);
   check("bash timeout suggests run_server for long-lived processes", r.includes("run_server"), r);
 
+  if (isWin) {
+    // bash Windows PowerShell tips
+    r = await executeTool("bash", { command: "rm -rf fake-dir" });
+    check("bash on Windows rm -rf command fails and shows PowerShell tip", r.includes("Windows PowerShell Tips") && r.includes("Remove-Item"), r);
+  }
+
   // arg normalization — native tool calls may use aliases instead of "path"
   r = await executeTool("write_file", { file: "alias.txt", content: "via alias" });
   check("write_file accepts 'file' alias for path", r.includes("Written"), r);

@@ -65,6 +65,41 @@ export function systemInfo(): SystemInfo {
   };
 }
 
+// Hardware doesn't change during a session, and detection spawns nvidia-smi /
+// PowerShell — so memoize it. Used by the model-switch fit warning (don't pay
+// the spawn cost on every switch).
+let _cachedInfo: SystemInfo | null = null;
+export function cachedSystemInfo(): SystemInfo {
+  if (!_cachedInfo) _cachedInfo = systemInfo();
+  return _cachedInfo;
+}
+
+// Proactive warning shown when SELECTING a model whose weights (and/or huge KV
+// cache from a large native context) won't fit the memory budget — so the user
+// learns it upfront instead of after a 10-minute thrash. Returns null when it
+// fits comfortably. Weights are the reliable signal (on-disk size ≈ VRAM use);
+// the context note is a qualitative heads-up since exact KV size needs the
+// model's head dims.
+export function modelFitWarning(modelSizeBytes: number | undefined, nativeContext: number | undefined): string | null {
+  const info = cachedSystemInfo();
+  const budget = info.budgetGB;
+  const weightsGB = modelSizeBytes ? Math.round((modelSizeBytes / 1e9) * 10) / 10 : 0;
+  if (!budget || !weightsGB) return null;
+  const where = info.budgetSource === "gpu" ? `${budget} GB VRAM` : `~${budget} GB usable RAM`;
+  const ctxK = nativeContext ? Math.round(nativeContext / 1024) : 0;
+
+  if (weightsGB > budget * 0.95) {
+    const ctxNote = ctxK > 32
+      ? ` On top of that, its ${ctxK}k context makes the KV cache huge — shrink it with /config contextWindow 16384.`
+      : "";
+    return `⚠ "${weightsGB} GB model" vs your ${where}: it won't fully fit, so part runs from system RAM and generation will be very slow (this is what made it hang).${ctxNote} For smooth local work pick a model that fits — see /system (e.g. qwen2.5-coder:7b or qwen3:8b).`;
+  }
+  if (ctxK > 64 && weightsGB > budget * 0.6) {
+    return `Note: the model fits your ${where}, but its ${ctxK}k context adds a large KV cache that can spill to RAM and slow generation. If it drags, lower it: /config contextWindow 32768.`;
+  }
+  return null;
+}
+
 // Per-task recommendations. minGB ≈ memory a Q4 build needs (VRAM, or RAM on CPU).
 interface Rec { name: string; minGB: number; note?: string; }
 const RECS: Record<"coding" | "vision" | "general", Rec[]> = {

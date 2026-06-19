@@ -26,9 +26,12 @@ export const TOOL_NAMES = [
   "grep_files", "list_dir", "bash", "delete_file",
   "run_server", "server_logs", "stop_server", "list_servers",
   "read_profile", "update_profile", "ask_user", "list_ports", "kill_port",
-  "browser_open", "browser_read", "browser_click", "browser_screenshot", "browser_close", "screenshot",
-  "system_info", "page_read", "page_find", "page_click", "page_highlight", "page_scroll",
+  "browser_open", "browser_read", "browser_click", "browser_type", "browser_screenshot", "browser_close", "screenshot",
+  "system_info", "page_read", "page_find", "page_click", "page_type", "page_highlight", "page_scroll",
   "page_open", "page_navigate",
+  "search_code", "index_workspace", "remember", "recall",
+  "task_add", "task_done", "task_list", "spawn_agents",
+  "browser_console", "browser_network", "browser_performance",
 ];
 
 function stripEdgeNewlines(s: string): string {
@@ -93,6 +96,18 @@ function parseXmlToolCalls(content: string): ParsedToolCall[] {
     } else if (name === "ask_user") {
       // Options are the body, separated by | or newlines (question is an attr).
       if (!args.options) args.options = stripEdgeNewlines(body).split(/\||\n/).map(s => s.trim()).filter(Boolean);
+    } else if (name === "remember") {
+      // The tag body is the fact(s) to save.
+      if (!args.content) args.content = stripEdgeNewlines(body);
+    } else if (name === "task_add") {
+      if (!args.text) args.text = stripEdgeNewlines(body).trim();
+    } else if (name === "task_done") {
+      if (!args.task) args.task = stripEdgeNewlines(body).trim();
+    } else if (name === "search_code") {
+      if (!args.query) args.query = stripEdgeNewlines(body).trim();
+    } else if (name === "spawn_agents") {
+      // One task per line (or separated by |) in the body.
+      if (!args.tasks) args.tasks = stripEdgeNewlines(body).split(/\||\n/).map(s => s.trim()).filter(Boolean);
     }
     resolvePathArg(args, body);
     calls.push({ name, arguments: args });
