@@ -14,7 +14,7 @@ import { describeTasks, addTask, completeTask, removeDoneTasks, clearTasks } fro
 import { ensureIndex, searchCode, formatSearchResults } from "../search";
 import { describeIndex } from "../indexer";
 import { runSubAgents, formatAgentResults } from "../agents";
-import { applyTheme, themeNames } from "../ui/theme";
+import { applyTheme, themeNames, applyIconStyle, detectIconStyle } from "../ui/theme";
 import type { Mode } from "../prompt";
 import type { Config } from "../config";
 
@@ -660,7 +660,7 @@ const commands: SlashCommand[] = [
   },
   {
     name: "theme",
-    description: "Switch the color theme:  /theme tokyo|dark|light|mono",
+    description: "Switch the color theme:  /theme mocha|tokyo|dark|light|mono",
     run: (args, ctx) => {
       const names = themeNames();
       const name = args[0]?.toLowerCase();
@@ -671,6 +671,26 @@ const commands: SlashCommand[] = [
       if (!applyTheme(name)) { ctx.print(`Unknown theme "${name}". Available: ${names.join(", ")}`, "error"); return; }
       saveConfig({ theme: name });
       ctx.print(`Theme set to ${name}. (Colors apply to everything rendered from now on.)`);
+    },
+  },
+  {
+    name: "icons",
+    description: "Switch the glyph set:  /icons auto|unicode|ascii  (ascii fixes \"?\" on legacy consoles)",
+    run: (args, ctx) => {
+      const choice = args[0]?.toLowerCase();
+      if (!choice) {
+        ctx.print(`Current icon style: ${getConfig().iconStyle} (auto-detected: ${detectIconStyle()}).\n` +
+          `Options: auto, unicode, ascii.\n` +
+          `Use /icons ascii if symbols show as "?" in this terminal, /icons unicode for the rich set.`);
+        return;
+      }
+      if (choice !== "auto" && choice !== "unicode" && choice !== "ascii") {
+        ctx.print(`Unknown icon style "${choice}". Options: auto, unicode, ascii.`, "error");
+        return;
+      }
+      const resolved = applyIconStyle(choice);
+      saveConfig({ iconStyle: choice });
+      ctx.print(`Icon style set to ${choice}${choice === "auto" ? ` (using ${resolved})` : ""}. Applies to everything rendered from now on.`);
     },
   },
   {

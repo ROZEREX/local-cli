@@ -98,7 +98,7 @@ function permDetail(name: string, args: any): string {
   if (name === "write_file") return `write ${args.path} (${args.content?.length ?? 0} chars)`;
   if (name === "edit_file") return `edit ${args.path}`;
   if (name === "delete_file") return `delete ${args.path}`;
-  if (name === "run_server") return `▶ start server: ${args.command}`;
+  if (name === "run_server") return `${theme.icon.run} start server: ${args.command}`;
   if (name === "stop_server") return `stop server ${args.id ?? "(latest)"}`;
   if (name === "update_profile") return `save to coding profile${args.name ? ` "${args.name}"` : ""}:\n${(args.content ?? "").slice(0, 200)}`;
   if (name === "kill_port") return `kill whatever is listening on port ${args.port}`;
@@ -634,25 +634,19 @@ export function App({ autoResume = false }: AppProps) {
   const activeAnswer = answerRef.current;
   const statusForBar: StatusState = overlay?.kind === "permission" ? "permission" : status;
 
-  return (
-    <Box flexDirection="column">
-      <Static items={committed}>
-        {(item) => <ItemView key={item.id} item={item} />}
-      </Static>
-
+  // Live (in-flight) region: streaming reasoning / answer / the current tool.
+  const liveRegion = (
+    <>
       {activeThinking ? <Thinking text={activeThinking} live /> : null}
       {activeAnswer ? <AssistantMessage text={activeAnswer} live /> : null}
       {liveTool ? <ToolCard tool={liveTool} /> : null}
+    </>
+  );
 
-      <Box flexDirection="column" marginTop={1}>
-        <StatusBar
-          model={model}
-          tokens={tokens}
-          contextWindow={contextWindow}
-          status={statusForBar}
-          mode={mode}
-        />
-        {overlay?.kind === "permission" ? (
+  // The active bottom control: an overlay (permission / picker / browser), the
+  // input field when idle, or the live "generating" line while streaming.
+  const controls =
+    overlay?.kind === "permission" ? (
           <PermissionPrompt
             name={overlay.tool}
             detail={overlay.detail}
@@ -668,7 +662,7 @@ export function App({ autoResume = false }: AppProps) {
             title={overlay.loading ? "Select a model (loading installed…)" : "Select a model"}
             items={overlay.models.map(m => {
               const spec = overlay.hints[m] ?? "";
-              const cur = m === model ? "● current" : "";
+              const cur = m === model ? `${theme.icon.dot} current` : "";
               return { label: m, value: m, hint: [cur, spec].filter(Boolean).join("   ") };
             })}
             onSelect={(m) => { saveConfig({ model: m }); resetClient(); setModel(m); setOverlay(null); commit({ kind: "system", text: `Model set to ${m}` }); void syncContextForModel(m, { force: true }); void agentFitnessWarning(getConfig().baseUrl, m).then(w => { if (w) commit({ kind: "system", text: w }); }).catch(() => {}); }}
@@ -692,7 +686,7 @@ export function App({ autoResume = false }: AppProps) {
         ) : overlay?.kind === "profiles" ? (
           <SelectList
             title="Select the active coding profile"
-            items={overlay.names.map(n => ({ label: n, value: n, hint: n === getActiveProfileName() ? "● active" : "" }))}
+            items={overlay.names.map(n => ({ label: n, value: n, hint: n === getActiveProfileName() ? `${theme.icon.dot} active` : "" }))}
             onSelect={(n) => { setActiveProfile(n); setOverlay(null); commit({ kind: "system", text: `Active coding profile: ${n}. I'll follow it in every project.` }); }}
             onCancel={() => setOverlay(null)}
           />
@@ -713,7 +707,28 @@ export function App({ autoResume = false }: AppProps) {
           />
         ) : (
           <GeneratingLine tokens={liveOut} elapsed={elapsed} phase={phase} thinking={!!activeThinking.trim() && !activeAnswer.trim()} />
-        )}
+        );
+
+  // Streaming transcript: committed turns flush to the terminal's native
+  // scrollback (mouse wheel / scrollbar work normally); the live region +
+  // status + input stay pinned at the bottom.
+  return (
+    <Box flexDirection="column">
+      <Static items={committed}>
+        {(item) => <ItemView key={item.id} item={item} />}
+      </Static>
+
+      {liveRegion}
+
+      <Box flexDirection="column" marginTop={1}>
+        <StatusBar
+          model={model}
+          tokens={tokens}
+          contextWindow={contextWindow}
+          status={statusForBar}
+          mode={mode}
+        />
+        {controls}
       </Box>
     </Box>
   );

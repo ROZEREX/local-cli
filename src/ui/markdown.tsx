@@ -66,7 +66,7 @@ function TextLine({ line }: { line: string }): React.ReactElement {
   }
   const quote = line.match(/^>\s?(.*)/);
   if (quote) {
-    return <Text color={theme.color.dim}><Text color={theme.color.accent}>▏</Text> <Inline text={quote[1] ?? ""} /></Text>;
+    return <Text color={theme.color.dim}><Text color={theme.color.accent}>{theme.icon.quote}</Text> <Inline text={quote[1] ?? ""} /></Text>;
   }
   if (!line.trim()) return <Text> </Text>;
   return <Inline text={line} />;

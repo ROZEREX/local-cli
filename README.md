@@ -243,7 +243,8 @@ bun run index.ts -b http://localhost:1234/v1   # e.g. LM Studio
 | `/review` | Review the pending `git diff` like a senior engineer (read-only) |
 | `/benchmark` | Measure the current model's real load/prefill/generation speed |
 | `/export [file]` | Export the conversation to a markdown file |
-| `/theme [name]` | Switch the color theme: `tokyo`, `dark`, `light`, `mono` |
+| `/theme [name]` | Switch the color theme: `mocha` (default), `tokyo`, `dark`, `light`, `mono` |
+| `/icons auto\|unicode\|ascii` | Glyph set — `ascii` fixes icons showing as `?` on the legacy Windows console (auto-detected) |
 | `/sandbox docker\|podman\|off` | Run `bash` commands inside a throwaway container |
 | `/clear` | Clear the conversation |
 | `/exit` | Quit |

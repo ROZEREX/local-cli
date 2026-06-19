@@ -4,7 +4,7 @@ import Spinner from "ink-spinner";
 import Gradient from "ink-gradient";
 import BigText from "ink-big-text";
 import { join, dirname } from "path";
-import { theme, toolIcon, toolColor } from "./theme";
+import { theme, toolColor } from "./theme";
 import { Markdown } from "./markdown";
 import { readClipboard, sanitizeForInput } from "../clipboard";
 import { listDirEntries } from "../files";
@@ -23,24 +23,24 @@ function relTime(ts: number): string {
 
 const GRAD = [...theme.gradient];
 
-// A small rounded "pill" used in the banner / status bar.
-function Pill({ icon, label, color }: { icon: string; label: string; color: string }) {
-  return (
-    <Text>
-      <Text color={color}>{icon} </Text>
-      <Text color={theme.color.fg}>{label}</Text>
-    </Text>
-  );
-}
-
 // ─── Banner ─────────────────────────────────────────────────────────────────
+// A compact gradient wordmark over a left-accent info rail — bounded, calm, and
+// modern (opencode/Claude-flavored) rather than a heavy full box.
 export function Banner({ model, baseUrl, cwd }: { model: string; baseUrl: string; cwd: string }) {
-  const shortCwd = cwd.length > 48 ? "…" + cwd.slice(-47) : cwd;
-  const row = (icon: string, label: string, value: React.ReactNode) => (
+  const shortCwd = cwd.length > 52 ? "…" + cwd.slice(-51) : cwd;
+  const server = baseUrl.replace(/^https?:\/\//, "").replace(/\/v1\/?$/, "");
+  const row = (icon: string, label: string, value: React.ReactNode, valColor?: string) => (
     <Box>
-      <Text color={theme.color.dim}>{icon} {label.padEnd(7)}</Text>
-      {value}
+      <Text color={theme.color.dim}>{icon}  </Text>
+      <Text color={theme.color.dim}>{label.padEnd(7)}</Text>
+      <Text color={valColor ?? theme.color.fg}>{value}</Text>
     </Box>
+  );
+  const hint = (key: string, label: string) => (
+    <Text>
+      <Text color={theme.color.accent}>{key}</Text>
+      <Text color={theme.color.dim}> {label}</Text>
+    </Text>
   );
   return (
     <Box flexDirection="column" marginBottom={1}>
@@ -48,65 +48,62 @@ export function Banner({ model, baseUrl, cwd }: { model: string; baseUrl: string
         <BigText text="local cli" font="tiny" />
       </Gradient>
       <Box marginTop={-1} paddingLeft={1}>
-        <Text color={theme.color.dim}>agentic coding on your own models</Text>
+        <Text color={theme.color.dim}>{theme.icon.spark} agentic coding on your own models</Text>
       </Box>
       <Box
         flexDirection="column"
         borderStyle="round"
-        borderColor={theme.color.dim}
-        paddingX={1}
+        borderColor={theme.color.primary}
+        borderTop={false}
+        borderRight={false}
+        borderBottom={false}
+        paddingLeft={2}
         marginTop={1}
+        marginLeft={1}
       >
-        {row(theme.icon.model, "model", <Text color={theme.color.primary} bold>{model}</Text>)}
-        {row(theme.icon.folder, "folder", <Text color={theme.color.fg}>{shortCwd}</Text>)}
-        {row("⌁", "server", <Text color={theme.color.dim}>{baseUrl}</Text>)}
+        {row(theme.icon.model, "model", model, theme.color.primary)}
+        {row(theme.icon.folder, "folder", shortCwd)}
+        {row(theme.icon.server, "server", server, theme.color.dim)}
       </Box>
-      <Box paddingLeft={1} marginTop={0}>
-        <Text color={theme.color.dim}>
-          <Text color={theme.color.accent}>/add</Text> files ·{" "}
-          <Text color={theme.color.accent}>/chats</Text> history ·{" "}
-          <Text color={theme.color.accent}>/browser</Text> guide ·{" "}
-          <Text color={theme.color.accent}>/help</Text> ·{" "}
-          <Text color={theme.color.accent}>shift+tab</Text> mode ·{" "}
-          <Text color={theme.color.accent}>esc</Text> stop
-        </Text>
+      <Box paddingLeft={1} marginTop={1} flexWrap="wrap">
+        <Text color={theme.color.dim}>{"   "}</Text>
+        {hint("/add", "files")}<Text color={theme.color.dim}>{"   "}</Text>
+        {hint("/chats", "history")}<Text color={theme.color.dim}>{"   "}</Text>
+        {hint("/help", "commands")}<Text color={theme.color.dim}>{"   "}</Text>
+        {hint("shift+tab", "mode")}<Text color={theme.color.dim}>{"   "}</Text>
+        {hint("esc", "stop")}
       </Box>
     </Box>
   );
 }
 
 // ─── User message ────────────────────────────────────────────────────────────
-// A cyan left-accent bar with a "you" label — chat-bubble feel without the
-// visual weight of a full box on every message.
+// Minimal: a colored prompt glyph and the text. No box — the glyph alone marks
+// the turn, keeping the transcript light (Claude-style).
 export function UserMessage({ text }: { text: string }) {
   return (
-    <Box marginTop={1} flexDirection="column">
-      <Text color={theme.color.user} bold>{theme.icon.user} you</Text>
-      <Box borderStyle="round" borderColor={theme.color.user} borderTop={false} borderRight={false} borderBottom={false} paddingLeft={1}>
-        <Text color={theme.color.fg}>{text}</Text>
+    <Box marginTop={1}>
+      <Text color={theme.color.user} bold>{theme.icon.user} </Text>
+      <Box flexGrow={1}>
+        <Text color={theme.color.muted}>{text}</Text>
       </Box>
     </Box>
   );
 }
 
 // ─── Assistant message ───────────────────────────────────────────────────────
-// `live` renders plain text while streaming (markdown reflow looks janky on
-// partial input); committed messages get full markdown formatting.
+// A filled bullet heads each turn; the body flows in an indented column so
+// wrapped lines stay aligned under the text, not the glyph. `live` renders plain
+// text while streaming (markdown reflow looks janky on partial input).
 export function AssistantMessage({ text, live }: { text: string; live?: boolean }) {
   if (!text.trim()) return null;
   return (
-    <Box marginTop={1} flexDirection="column">
-      <Gradient colors={GRAD}><Text bold>{theme.icon.assistant} assistant</Text></Gradient>
-      <Box
-        borderStyle="round"
-        borderColor={theme.color.primary}
-        borderTop={false}
-        borderRight={false}
-        borderBottom={false}
-        paddingLeft={1}
-        flexDirection="column"
-      >
-        {live ? <Text color={theme.color.fg}>{text}<Text color={theme.color.primary}>▍</Text></Text> : <Markdown text={text} />}
+    <Box marginTop={1} flexDirection="row">
+      <Text color={theme.color.primary} bold>{theme.icon.assistant} </Text>
+      <Box flexDirection="column" flexGrow={1}>
+        {live
+          ? <Text color={theme.color.fg}>{text}<Text color={theme.color.primary}>{theme.icon.cursor}</Text></Text>
+          : <Markdown text={text} />}
       </Box>
     </Box>
   );
@@ -121,7 +118,7 @@ export function Thinking({ text, live }: { text: string; live?: boolean }) {
       <Box flexDirection="column" flexGrow={1}>
         <Text color={theme.color.think} italic dimColor>
           {text.trim()}
-          {live ? <Text> ▍</Text> : null}
+          {live ? <Text> {theme.icon.cursor}</Text> : null}
         </Text>
       </Box>
     </Box>
@@ -129,6 +126,8 @@ export function Thinking({ text, live }: { text: string; live?: boolean }) {
 }
 
 // ─── Tool card ───────────────────────────────────────────────────────────────
+// `⏺ name(args)` on the header line, the result hanging beneath on a `⎿` tree
+// connector — the recognizable modern coding-agent shape, no surrounding box.
 export interface ToolView {
   name: string;
   summary: string;
@@ -137,15 +136,14 @@ export interface ToolView {
 }
 
 export function ToolCard({ tool }: { tool: ToolView }) {
-  const icon = toolIcon[tool.name] ?? theme.icon.tool;
   const accent = toolColor[tool.name] ?? theme.color.tool;
-  const statusEl =
+  const bullet =
     tool.status === "running" ? (
-      <Text color={theme.color.warn}><Spinner type="dots" /></Text>
+      <Text color={theme.color.accent}><Spinner type="dots" /></Text>
     ) : tool.status === "denied" ? (
-      <Text color={theme.color.error}>{theme.icon.fail}</Text>
+      <Text color={theme.color.error}>{theme.icon.assistant}</Text>
     ) : (
-      <Text color={theme.color.success}>{theme.icon.ok}</Text>
+      <Text color={theme.color.success}>{theme.icon.assistant}</Text>
     );
 
   const resultLines = (tool.result ?? "").split("\n").filter(Boolean);
@@ -155,45 +153,32 @@ export function ToolCard({ tool }: { tool: ToolView }) {
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
-        <Text>{statusEl} </Text>
-        <Text color={accent} bold>{icon} {tool.name}</Text>
-        <Text color={theme.color.dim}>  {tool.summary}</Text>
+        {bullet}
+        <Text> </Text>
+        <Text color={accent} bold>{tool.name}</Text>
+        {tool.summary ? (
+          <Text color={theme.color.dim}>(<Text color={theme.color.muted}>{tool.summary}</Text>)</Text>
+        ) : null}
       </Box>
       {tool.status !== "running" && preview.length > 0 ? (
-        <Box
-          flexDirection="column"
-          borderStyle="round"
-          borderColor={tool.status === "denied" ? theme.color.error : accent}
-          borderLeft
-          borderRight={false}
-          borderTop={false}
-          borderBottom={false}
-          paddingLeft={1}
-          marginLeft={1}
-        >
+        <Box flexDirection="column">
           {preview.map((l, i) => {
-            const isErr = tool.status === "denied" || 
-                          l.startsWith("Error:") || 
-                          l.startsWith("Exit ") || 
-                          /failed/i.test(l) || 
+            const isErr = tool.status === "denied" ||
+                          l.startsWith("Error:") ||
+                          l.startsWith("Exit ") ||
+                          /failed/i.test(l) ||
                           /syntax of the command is incorrect/i.test(l);
+            const body = l.length > 140 ? l.slice(0, 140) + "…" : l;
             return (
-              <Text
-                key={i}
-                color={isErr ? theme.color.error : undefined}
-                dimColor={!isErr}
-              >
-                {l.length > 140 ? l.slice(0, 140) + "…" : l}
+              <Text key={i} color={isErr ? theme.color.error : theme.color.muted}>
+                <Text color={theme.color.dim}>{i === 0 ? `  ${theme.icon.branch} ` : "    "}</Text>
+                {body}
               </Text>
             );
           })}
           {more > 0 ? (
-            <Text
-              color={tool.status === "denied" ? theme.color.error : undefined}
-              dimColor={tool.status !== "denied"}
-              italic
-            >
-              … {more} more line{more > 1 ? "s" : ""}
+            <Text color={tool.status === "denied" ? theme.color.error : theme.color.dim} italic>
+              {"    "}+{more} more line{more > 1 ? "s" : ""}
             </Text>
           ) : null}
         </Box>
@@ -205,19 +190,24 @@ export function ToolCard({ tool }: { tool: ToolView }) {
 // ─── System / command output ─────────────────────────────────────────────────
 export function SystemMessage({ text, tone }: { text: string; tone?: "info" | "error" }) {
   const color = tone === "error" ? theme.color.error : theme.color.dim;
+  const glyph = tone === "error" ? theme.icon.warn : theme.icon.bullet;
+  const lines = text.split("\n");
   return (
-    <Box marginTop={1} flexDirection="column" paddingLeft={1}>
-      {text.split("\n").map((l, i) => (
-        <Text key={i} color={color}>{l}</Text>
-      ))}
+    <Box marginTop={1} flexDirection="row">
+      <Text color={color}>{glyph} </Text>
+      <Box flexDirection="column" flexGrow={1}>
+        {lines.map((l, i) => (
+          <Text key={i} color={color}>{l}</Text>
+        ))}
+      </Box>
     </Box>
   );
 }
 
 // ─── Status bar ──────────────────────────────────────────────────────────────
+// Borderless quiet line above the framed input: mode badge + status on the left,
+// model + context meter on the right.
 export type StatusState = "idle" | "thinking" | "permission";
-
-const fmtTok = (n: number) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n));
 
 export function StatusBar({
   model,
@@ -235,8 +225,6 @@ export function StatusBar({
   const pct = Math.min(100, Math.round((tokens / contextWindow) * 100));
   const pctColor = pct > 85 ? theme.color.error : pct > 65 ? theme.color.warn : theme.color.dim;
 
-  // No spinner here — the GeneratingLine below is the single live/animated
-  // indicator. This bar just states the current status + persistent context info.
   const statusEl =
     status === "thinking" ? (
       <Text color={theme.color.warn}>{theme.icon.dot} working</Text>
@@ -253,32 +241,33 @@ export function StatusBar({
     null;
 
   return (
-    <Box marginTop={1} borderStyle="round" borderColor={theme.color.dim} paddingX={1} justifyContent="space-between">
-      <Box marginRight={2}>
+    <Box paddingX={1} justifyContent="space-between">
+      <Box>
         {badge}
-        <Text> {statusEl}</Text>
+        <Text>{badge ? " " : ""}{statusEl}</Text>
       </Box>
       <Box>
-        <Text dimColor>{theme.icon.model} </Text>
+        <Text color={theme.color.dim}>{theme.icon.model} </Text>
         <Text color={theme.color.primary}>{model}</Text>
-        <Text dimColor>   {theme.icon.tokens} context </Text>
+        <Text color={theme.color.dim}>   {theme.icon.tokens} </Text>
         <ContextBar pct={pct} color={pctColor} />
-        <Text color={pctColor}> {tokens.toLocaleString()}</Text>
-        <Text dimColor> / {contextWindow.toLocaleString()} </Text>
-        <Text color={pctColor}>({pct}%)</Text>
+        <Text color={pctColor}> {pct}%</Text>
+        <Text color={theme.color.dim}> · {fmtTok(tokens)}/{fmtTok(contextWindow)}</Text>
       </Box>
     </Box>
   );
 }
 
-// Mini context-usage meter for the status bar: ▰▰▰▱▱▱▱▱▱▱
+const fmtTok = (n: number) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n));
+
+// Mini context-usage meter: ▰▰▰▱▱▱▱▱▱▱
 function ContextBar({ pct, color }: { pct: number; color: string }) {
   const cells = 10;
   const filled = Math.max(0, Math.min(cells, Math.round((pct / 100) * cells)));
   return (
     <Text>
-      <Text color={color}>{"▰".repeat(filled)}</Text>
-      <Text color={theme.color.dim}>{"▱".repeat(cells - filled)}</Text>
+      <Text color={color}>{theme.icon.barFull.repeat(filled)}</Text>
+      <Text color={theme.color.dim}>{theme.icon.barEmpty.repeat(cells - filled)}</Text>
     </Text>
   );
 }
@@ -299,8 +288,6 @@ export function GeneratingLine({
   phase?: LivePhase;
   thinking?: boolean;
 }) {
-  // Live tok/s derived from the ticking counters, so it updates in real time
-  // instead of only at the end of the turn.
   const liveTps = elapsed > 0 ? Math.round(tokens / elapsed) : 0;
   const label =
     phase === "loading" ? "loading model into memory" :
@@ -311,8 +298,8 @@ export function GeneratingLine({
     phase === "loading" ? "  (cold start — can take a while)" :
     tokens === 0 && phase === "prefill" ? "  (prefill)" : "";
   return (
-    <Box>
-      <Text color={thinking && tokens > 0 ? theme.color.think : theme.color.warn}>
+    <Box paddingX={1}>
+      <Text color={thinking && tokens > 0 ? theme.color.think : theme.color.accent}>
         <Spinner type="dots" /> {label}{" "}
       </Text>
       {tokens > 0 ? <Text color={theme.color.success}>↓{tokens.toLocaleString()} tok</Text> : null}
@@ -328,21 +315,22 @@ export function GeneratingLine({
 export function DiffPreview({ diff }: { diff: DiffView }) {
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text dimColor>
-        <Text color={theme.color.success}>+{diff.added}</Text>{" "}
-        <Text color={theme.color.error}>-{diff.removed}</Text>
+      <Text>
+        <Text color={theme.color.success} bold>+{diff.added}</Text>
+        <Text color={theme.color.dim}>  </Text>
+        <Text color={theme.color.error} bold>-{diff.removed}</Text>
       </Text>
       {diff.lines.map((l, i) => (
         <Text
           key={i}
-          color={l.type === "add" ? theme.color.success : l.type === "del" ? theme.color.error : undefined}
-          dimColor={l.type === "ctx"}
+          color={l.type === "add" ? theme.color.success : l.type === "del" ? theme.color.error : theme.color.dim}
         >
+          <Text color={theme.color.dim}>{l.type === "add" ? "│ " : l.type === "del" ? "│ " : "│ "}</Text>
           {l.type === "add" ? "+ " : l.type === "del" ? "- " : "  "}
-          {l.text.length > 130 ? l.text.slice(0, 130) + "…" : l.text}
+          {l.text.length > 128 ? l.text.slice(0, 128) + "…" : l.text}
         </Text>
       ))}
-      {diff.truncated > 0 ? <Text dimColor italic>⋯ {diff.truncated} more changed lines</Text> : null}
+      {diff.truncated > 0 ? <Text color={theme.color.dim} italic>{"│ "}{theme.icon.ellipsis} {diff.truncated} more changed lines</Text> : null}
     </Box>
   );
 }
@@ -402,16 +390,16 @@ export function PermissionPrompt({
         <Box>
           <Text color={theme.color.warn} bold>{theme.icon.warn} select hunks </Text>
           <Text color={theme.color.tool} bold>{name}</Text>
-          <Text dimColor>  — apply only the changes you check</Text>
+          <Text color={theme.color.dim}>  — apply only the changes you check</Text>
         </Box>
         {hunks.map((h, i) => (
           <Box key={h.index} flexDirection="column">
             <Text color={i === cursor ? theme.color.accent : undefined}>
-              {i === cursor ? "❯ " : "  "}
-              {picked.has(h.index) ? "☑" : "☐"}{" "}
+              {i === cursor ? `${theme.icon.user} ` : "  "}
+              {picked.has(h.index) ? theme.icon.radioOn : theme.icon.radioOff}{" "}
               <Text color={theme.color.success}>+{h.added}</Text>
               <Text color={theme.color.error}> -{h.removed}</Text>
-              <Text dimColor>  {h.header}</Text>
+              <Text color={theme.color.dim}>  {h.header}</Text>
             </Text>
             {i === cursor
               ? h.lines.slice(0, 6).map((l, j) => (
@@ -421,11 +409,11 @@ export function PermissionPrompt({
                   </Text>
                 ))
               : null}
-            {i === cursor && h.lines.length > 6 ? <Text dimColor italic>{"      "}⋯ {h.lines.length - 6} more lines</Text> : null}
+            {i === cursor && h.lines.length > 6 ? <Text color={theme.color.dim} italic>{"      "}{theme.icon.ellipsis} {h.lines.length - 6} more lines</Text> : null}
           </Box>
         ))}
         <Box marginTop={1}>
-          <Text dimColor>↑↓ move · space toggle · enter apply {picked.size}/{hunks.length} · esc back</Text>
+          <Text color={theme.color.dim}>↑↓ move · space toggle · enter apply {picked.size}/{hunks.length} · esc back</Text>
         </Box>
       </Box>
     );
@@ -437,14 +425,14 @@ export function PermissionPrompt({
         <Text color={theme.color.warn} bold>{theme.icon.warn} permission </Text>
         <Text color={theme.color.tool} bold>{name}</Text>
       </Box>
-      <Text dimColor>{detail}</Text>
+      <Text color={theme.color.muted}>{detail}</Text>
       {diff ? <DiffPreview diff={diff} /> : null}
       <Box marginTop={1}>
         <Text>
-          <Text color={theme.color.success} bold>y</Text><Text dimColor> allow   </Text>
-          <Text color={theme.color.error} bold>n</Text><Text dimColor> deny   </Text>
-          <Text color={theme.color.primary} bold>a</Text><Text dimColor> always   </Text>
-          {canSelect ? <><Text color={theme.color.accent} bold>s</Text><Text dimColor> select hunks</Text></> : null}
+          <Text color={theme.color.success} bold>y</Text><Text color={theme.color.dim}> allow   </Text>
+          <Text color={theme.color.error} bold>n</Text><Text color={theme.color.dim}> deny   </Text>
+          <Text color={theme.color.primary} bold>a</Text><Text color={theme.color.dim}> always   </Text>
+          {canSelect ? <><Text color={theme.color.accent} bold>s</Text><Text color={theme.color.dim}> select hunks</Text></> : null}
         </Text>
       </Box>
     </Box>
@@ -475,19 +463,19 @@ export function SelectList({
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.color.primary} paddingX={1}>
-      <Text bold color={theme.color.primary}>{title}</Text>
+      <Text bold color={theme.color.primary}>{theme.icon.spark} {title}</Text>
       {items.length === 0 ? (
-        <Text dimColor>  (none)</Text>
+        <Text color={theme.color.dim}>  (none)</Text>
       ) : (
         items.map((it, i) => (
-          <Text key={it.value} color={i === idx ? theme.color.accent : undefined}>
-            {i === idx ? "❯ " : "  "}
+          <Text key={it.value} color={i === idx ? theme.color.accent : theme.color.fg}>
+            {i === idx ? `${theme.icon.user} ` : "  "}
             {it.label}
-            {it.hint ? <Text dimColor>   {it.hint}</Text> : null}
+            {it.hint ? <Text color={theme.color.dim}>   {it.hint}</Text> : null}
           </Text>
         ))
       )}
-      <Box marginTop={1}><Text dimColor>↑↓ move · enter select · esc cancel</Text></Box>
+      <Box marginTop={1}><Text color={theme.color.dim}>↑↓ move · enter select · esc cancel</Text></Box>
     </Box>
   );
 }
@@ -637,7 +625,7 @@ export function PromptInput({
 
   if (!menu) return inputBox;
 
-  // The slash-command menu, like Claude's: filtered list with descriptions.
+  // The slash-command menu: filtered list with descriptions.
   const WINDOW = 8;
   const start = Math.max(0, Math.min(menuSel - Math.floor(WINDOW / 2), Math.max(0, menu.length - WINDOW)));
   const visible = menu.slice(start, start + WINDOW);
@@ -646,18 +634,18 @@ export function PromptInput({
     <Box flexDirection="column">
       {inputBox}
       <Box flexDirection="column" borderStyle="round" borderColor={theme.color.primary} paddingX={1}>
-        <Text bold color={theme.color.primary}>{theme.icon.spark} commands {menu.length > WINDOW ? <Text dimColor>({menu.length})</Text> : null}</Text>
+        <Text bold color={theme.color.primary}>{theme.icon.spark} commands {menu.length > WINDOW ? <Text color={theme.color.dim}>({menu.length})</Text> : null}</Text>
         {visible.map((cmd, i) => {
           const active = start + i === menuSel;
           return (
             <Text key={cmd.name} color={active ? theme.color.accent : undefined}>
-              {active ? "❯ " : "  "}
+              {active ? `${theme.icon.user} ` : "  "}
               <Text color={active ? theme.color.accent : theme.color.fg}>/{cmd.name.padEnd(nameW)}</Text>
-              <Text dimColor>  {cmd.description}</Text>
+              <Text color={theme.color.dim}>  {cmd.description}</Text>
             </Text>
           );
         })}
-        <Box marginTop={1}><Text dimColor>↑↓ move · tab complete · enter run · esc close</Text></Box>
+        <Box marginTop={1}><Text color={theme.color.dim}>↑↓ move · tab complete · enter run · esc close</Text></Box>
       </Box>
     </Box>
   );
@@ -677,9 +665,9 @@ export function PlanApproval({ onDecide }: { onDecide: (d: "approve" | "keep" | 
       <Text color={theme.color.accent} bold>{theme.icon.thinking} plan ready</Text>
       <Box marginTop={1}>
         <Text>
-          <Text color={theme.color.success} bold>a</Text><Text dimColor> approve & build   </Text>
-          <Text color={theme.color.primary} bold>k</Text><Text dimColor> keep planning   </Text>
-          <Text color={theme.color.error} bold>esc</Text><Text dimColor> cancel</Text>
+          <Text color={theme.color.success} bold>a</Text><Text color={theme.color.dim}> approve & build   </Text>
+          <Text color={theme.color.primary} bold>k</Text><Text color={theme.color.dim}> keep planning   </Text>
+          <Text color={theme.color.error} bold>esc</Text><Text color={theme.color.dim}> cancel</Text>
         </Text>
       </Box>
     </Box>
@@ -724,7 +712,7 @@ export function ChatBrowser({
       <Text bold color={theme.color.primary}>{theme.icon.spark} chats — {sessions.length} saved</Text>
       <Box flexDirection="column" marginTop={1}>
         <Text color={cur === 0 ? theme.color.accent : theme.color.success}>
-          {cur === 0 ? "❯ " : "  "}{theme.icon.spark} new chat
+          {cur === 0 ? `${theme.icon.user} ` : "  "}{theme.icon.spark} new chat
         </Text>
         {sessions.slice(startRow, startRow + WINDOW).map((s, i) => {
           const realIdx = startRow + i + 1;
@@ -732,7 +720,7 @@ export function ChatBrowser({
           const isCurrent = s.id === activeId;
           return (
             <Text key={s.id} color={active ? theme.color.accent : theme.color.fg}>
-              {active ? "❯ " : "  "}
+              {active ? `${theme.icon.user} ` : "  "}
               {isCurrent ? <Text color={theme.color.success}>{theme.icon.dot} </Text> : "  "}
               {s.title}
               <Text color={theme.color.dim}>  · {relTime(s.updatedAt)} · {s.messageCount} msg · {s.model}</Text>
@@ -809,7 +797,7 @@ export function FileBrowser({
           const label = e.isDir ? `${e.name}/` : e.name;
           return (
             <Text key={e.name} color={active ? theme.color.accent : sel ? theme.color.success : e.isDir ? theme.color.primary : theme.color.fg}>
-              {active ? "❯ " : "  "}{mark}{e.isDir ? `${theme.icon.folder} ` : ""}{label}
+              {active ? `${theme.icon.user} ` : "  "}{mark}{e.isDir ? `${theme.icon.folder} ` : ""}{label}
             </Text>
           );
         })}

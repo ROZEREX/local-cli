@@ -54,8 +54,12 @@ export interface Config {
   sandboxImage: string;
   // Max fix-and-retest iterations for the /debug autonomous loop.
   debugMaxIterations: number;
-  // UI color theme preset (see /theme): "tokyo" (default), "dark", "light", "mono".
+  // UI color theme preset (see /theme): "mocha" (default), "tokyo", "dark", "light", "mono".
   theme: string;
+  // Glyph set (see /icons). "auto" detects the terminal — legacy Windows console
+  // (conhost / powershell.exe) gets an ASCII/CP437-safe set so icons don't render
+  // as "?"; modern terminals get the rich unicode set. "unicode"/"ascii" force it.
+  iconStyle: "auto" | "unicode" | "ascii";
   // Stream watchdog (cold-load / hang resilience). While waiting for the model's
   // first token, emit a "still loading" heartbeat every this-many seconds (0 =
   // off). On a 12 GB-VRAM box a cold load can take a while; this keeps the UI
@@ -97,7 +101,8 @@ const DEFAULTS: Config = {
   sandbox: "none",
   sandboxImage: "alpine:latest",
   debugMaxIterations: 10,
-  theme: "tokyo",
+  theme: "mocha",
+  iconStyle: "auto",
   stallHeartbeatSec: 15,
   stallTimeoutSec: 120,
 };
