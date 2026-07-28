@@ -17,19 +17,55 @@ import { recordFileChange } from "../history";
 import { readMemory, addMemory } from "../memory";
 import { addTask, completeTask, describeTasks } from "../tasks";
 import { searchCode, formatSearchResults, ensureIndex } from "../search";
+import { normalizeTodos, setSessionTodos, formatSessionTodos } from "../todos";
 import { describeIndex } from "../indexer";
 import { browserNetwork, browserPerformance } from "../browser";
+import { searchViaChrome } from "../web-search";
+import { isIncognito, incognitoBlock } from "../incognito";
+import { generateImage } from "../imagegen";
 
 function resolvePath(p: string): string {
   if (!p) return getConfig().cwd;
   return resolve(getConfig().cwd, p);
 }
 
+// When a path doesn't resolve, walk it from the cwd segment-by-segment and report
+// the first segment that diverges plus what's actually there (and case fixes), so
+// a model that guessed a wrong path/case can correct itself instead of looping.
+function pathHint(fp: string): string {
+  try {
+    const root = getConfig().cwd;
+    const rel = relative(root, fp);
+    if (!rel || rel.startsWith("..")) return " Use list_dir or glob_files to check the exact path.";
+    const parts = rel.split(/[\\/]/).filter(Boolean);
+    let cur = root;
+    for (let i = 0; i < parts.length; i++) {
+      const want = parts[i]!;
+      const entries = readdirSync(cur);
+      if (!entries.includes(want)) {
+        const ci = entries.find(e => e.toLowerCase() === want.toLowerCase());
+        if (ci) return ` (it's spelled "${ci}", not "${want}").`;
+        const where = i === 0 ? "the project root" : `"${parts.slice(0, i).join("/")}"`;
+        const q = want.toLowerCase();
+        const near = entries.filter(e => e.toLowerCase().startsWith(q.slice(0, 2))).slice(0, 8);
+        return near.length
+          ? ` "${want}" isn't in ${where} — it has: ${near.join(", ")}. Use list_dir to see all.`
+          : ` "${want}" isn't in ${where}. Use list_dir to check the path.`;
+      }
+      cur = join(cur, want);
+      if (i < parts.length - 1 && !statSync(cur).isDirectory()) {
+        return ` "${parts.slice(0, i + 1).join("/")}" is a file, not a folder.`;
+      }
+    }
+  } catch { /* best-effort hint */ }
+  return " Use list_dir or glob_files to check the exact path.";
+}
+
 // ─── read_file ────────────────────────────────────────────────────────────────
 export function readFile(args: { path: string; offset?: number; limit?: number }): string {
   if (!args.path) return "Error: path is required.";
   const fp = resolvePath(args.path);
-  if (!existsSync(fp)) return `Error: File not found: ${fp}`;
+  if (!existsSync(fp)) return `Error: File not found: ${fp}.${pathHint(fp)}`;
   if (statSync(fp).isDirectory()) return `Error: Path is a directory, not a file: ${fp}`;
   try {
     const lines = readFileSync(fp, "utf-8").split("\n");
@@ -229,7 +265,11 @@ export function editFile(args: { path: string; old_string: string; new_string: s
 }
 
 // ─── glob_files ───────────────────────────────────────────────────────────────
-export async function globFiles(args: { pattern: string; cwd?: string }): Promise<string> {
+export async function globFiles(args: { pattern?: string; cwd?: string }): Promise<string> {
+  if (!args.pattern || typeof args.pattern !== "string") {
+    return `Error: glob_files needs a "pattern" argument — a glob like "**/*.js", "src/**/*.ts", or "*.json". ` +
+      `(To list a folder's contents instead, use list_dir.)`;
+  }
   const cwd = args.cwd ? resolvePath(args.cwd) : getConfig().cwd;
   try {
     const matches = await glob(args.pattern, {
@@ -493,6 +533,9 @@ export function readProfileTool(args: { name?: string }): string {
 
 // ─── update_profile ───────────────────────────────────────────────────────────
 export function updateProfileTool(args: { content?: string; name?: string; mode?: string }): string {
+  if (isIncognito()) {
+    return incognitoBlock("saving to the coding profile", "Apply the rule for the rest of this conversation instead of persisting it.");
+  }
   if (!args.content || !args.content.trim()) {
     return "Error: content was not provided. Put the rule(s) to save inside the tool body.";
   }
@@ -522,7 +565,15 @@ export function killPortTool(args: { port?: number | string }): string {
   const port = Number(args.port);
   if (!port || !Number.isFinite(port)) return "Error: a numeric port is required (e.g. kill_port port=3000).";
   const r = killPort(port);
-  if (!r.ok) return `Nothing was listening on port ${port} (or it couldn't be killed). It should be free now.`;
+  if (!r.ok) {
+    // Nothing got killed — tell the truth about WHY instead of guessing "it
+    // should be free now": either the port was already free, or the process
+    // survived the kill (e.g. needs elevated privileges).
+    const survivor = listListeningPorts().find(p => p.port === port);
+    return survivor
+      ? `Error: port ${port} is STILL in use by PID ${survivor.pid}${survivor.process ? ` (${survivor.process})` : ""} and it could not be killed — it may need elevated privileges, or it's a protected system process. The port is NOT free.`
+      : `Nothing is listening on port ${port} — it's already free.`;
+  }
   return `Freed port ${port} — killed ${r.killed.map(k => `PID ${k.pid}${k.process ? " (" + k.process + ")" : ""}`).join(", ")}.`;
 }
 
@@ -676,6 +727,9 @@ export async function indexWorkspaceTool(): Promise<string> {
 
 // ─── remember / recall (per-project agent memory) ─────────────────────────────
 export function rememberTool(args: { content?: string; fact?: string; text?: string }): string {
+  if (isIncognito()) {
+    return incognitoBlock("writing to project memory", "Keep the fact in your working context for this conversation only.");
+  }
   const content = (args.content ?? args.fact ?? args.text ?? "").trim();
   if (!content) return "Error: provide the fact(s) to remember in 'content' (short markdown bullets).";
   const { added, skipped } = addMemory(content);
@@ -711,6 +765,16 @@ export function taskListTool(): string {
   return describeTasks();
 }
 
+// ─── set_todos (live session checklist) ───────────────────────────────────────
+export function setTodosTool(args: { todos?: any }): string {
+  const items = normalizeTodos(args.todos);
+  if (items.length === 0) {
+    return "Error: provide the checklist in 'todos' — an array of { text, status } items (status: pending | in_progress | completed). Send the FULL current list.";
+  }
+  setSessionTodos(items);
+  return formatSessionTodos();
+}
+
 // ─── spawn_agents (multi-agent mode) ──────────────────────────────────────────
 export async function spawnAgentsTool(args: { tasks?: string[] | string; allow_writes?: boolean }): Promise<string> {
   let tasks: string[] = Array.isArray(args.tasks)
@@ -719,9 +783,37 @@ export async function spawnAgentsTool(args: { tasks?: string[] | string; allow_w
       ? args.tasks.split(/\||\n/).map(t => t.trim()).filter(Boolean)
       : [];
   if (tasks.length === 0) return "Error: provide 1-4 tasks (array, or one per line / separated by |).";
-  const { runSubAgents, formatAgentResults } = await import("../agents");
+  const { runSubAgents, formatAgentResults, inSubAgent } = await import("../agents");
+  if (inSubAgent()) {
+    return "Error: you are a sub-agent — sub-agents cannot spawn further sub-agents. Do the task yourself with your own tools and report back.";
+  }
   const results = await runSubAgents(tasks, { allowWrites: !!args.allow_writes });
   return formatAgentResults(results);
+}
+
+// ─── search_via_chrome (live internet via the user's Chrome over CDP) ─────────
+export async function searchViaChromeTool(args: { query?: string; max_pages?: number }): Promise<string> {
+  const query = (args.query ?? "").trim();
+  if (!query) return "Error: a query is required (e.g. search_via_chrome query=\"tailwind v4 install\").";
+  const maxPages = Math.min(Math.max(Number(args.max_pages) || 2, 1), 3);
+  // In incognito the search still runs — the agent has to be able to look things
+  // up — but through a throwaway browser with its own profile, so nothing lands
+  // in the user's real Chrome history. The query itself necessarily reaches the
+  // search engine; that limit is stated rather than hidden.
+  const priv = isIncognito();
+  try {
+    const r = await searchViaChrome(query, maxPages, { private: priv });
+    const tag = priv ? " [private browser — no trace in your Chrome profile]" : "";
+    if (r.pages.length === 0) {
+      return `search_via_chrome("${query}")${tag} — ${r.note || "no readable results."}`;
+    }
+    const body = r.pages
+      .map(p => `### ${p.title}\n<${p.url}>\n\n${p.text}`)
+      .join("\n\n---\n\n");
+    return `Live web results for "${query}" (read from the browser)${tag}:\n\n${body}`;
+  } catch (e: any) {
+    return `Error searching via Chrome: ${e.message}. Make sure Chrome is installed; to use your real session, start it with --remote-debugging-port=9222.`;
+  }
 }
 
 // ─── browser devtools ─────────────────────────────────────────────────────────
@@ -759,6 +851,12 @@ function normalizeArgs(args: any): any {
   if (!args.command && args.cmd) args.command = args.cmd;
   if (args.port == null) { for (const a of ["portNumber", "port_number", "p"]) if (args[a] != null) { args.port = args[a]; break; } }
   if (!args.url) { for (const a of ["address", "link", "href", "uri"]) if (args[a]) { args.url = args[a]; break; } }
+  // search_via_chrome arg variations
+  if (!args.query) { for (const a of ["q", "search", "text", "prompt", "term"]) if (args[a]) { args.query = args[a]; break; } }
+  if (args.max_pages == null) { for (const a of ["maxPages", "pages", "num_pages", "limit"]) if (args[a] != null) { args.max_pages = args[a]; break; } }
+  // set_todos / propose_plan arg variations
+  if (!args.todos) { for (const a of ["items", "list", "checklist", "todo_list", "todoList"]) if (args[a]) { args.todos = args[a]; break; } }
+  if (!args.plan) { for (const a of ["plan_text", "planText", "markdown", "proposal"]) if (args[a]) { args.plan = args[a]; break; } }
   return args;
 }
 
@@ -797,20 +895,62 @@ const TOOL_ALIASES: Record<string, string> = {
   add_task: "task_add", create_task: "task_add", todo_add: "task_add",
   complete_task: "task_done", finish_task: "task_done", mark_done: "task_done",
   list_tasks: "task_list", tasks: "task_list", todo_list: "task_list",
+  // session todos (models trained on Claude Code call it TodoWrite)
+  todo_write: "set_todos", todowrite: "set_todos", write_todos: "set_todos",
+  update_todos: "set_todos", set_todo: "set_todos", todos: "set_todos",
+  // plan approval (models trained on Claude Code call it ExitPlanMode)
+  exit_plan_mode: "propose_plan", exitplanmode: "propose_plan",
+  present_plan: "propose_plan", submit_plan: "propose_plan", approve_plan: "propose_plan",
   // index
   index_project: "index_workspace", build_index: "index_workspace", reindex: "index_workspace",
   // agents
   spawn_agent: "spawn_agents", sub_agents: "spawn_agents", run_agents: "spawn_agents",
   // browser devtools
   console_logs: "browser_console", network_requests: "browser_network",
+  // live web search via the user's Chrome
+  web_search: "search_via_chrome", search_web: "search_via_chrome", search_internet: "search_via_chrome",
+  google: "search_via_chrome", google_search: "search_via_chrome", search_docs: "search_via_chrome",
+  browse_web: "search_via_chrome", fetch_url: "search_via_chrome", read_url: "search_via_chrome",
+  // image generation (models trained on other harnesses use many names)
+  create_image: "generate_image", make_image: "generate_image", draw_image: "generate_image",
+  text_to_image: "generate_image", txt2img: "generate_image", image_gen: "generate_image",
+  generate_picture: "generate_image", draw: "generate_image",
 };
 
 export function canonicalToolName(name: string): string {
   return TOOL_ALIASES[name] ?? name;
 }
 
+// ─── generate_image (local diffusion server) ──────────────────────────────────
+export async function generateImageTool(args: {
+  prompt?: string; negative_prompt?: string; width?: number; height?: number;
+  steps?: number; cfg_scale?: number; seed?: number; model?: string; path?: string;
+}, onNotice?: (s: string) => void): Promise<string> {
+  const prompt = (args.prompt ?? "").trim();
+  if (!prompt) return "Error: a prompt is required (describe the image to generate).";
+  try {
+    const r = await generateImage({
+      prompt,
+      negativePrompt: args.negative_prompt,
+      width: args.width, height: args.height,
+      steps: args.steps, cfgScale: args.cfg_scale,
+      seed: args.seed, model: args.model, outPath: args.path,
+    }, undefined, onNotice);
+    const rel = relative(getConfig().cwd, r.path) || r.path;
+    const swap = r.swap.unloaded.length ? ` Freed VRAM by unloading ${r.swap.unloaded.join(", ")}; it is reloading now.` : "";
+    // A generated PNG is a real file — in incognito that's a trace the mode
+    // cannot remove, so say so rather than letting the user assume otherwise.
+    const note = isIncognito() ? " Note: this PNG is a real file on disk — incognito does not delete it." : "";
+    return `Generated a ${r.width}×${r.height} image with ${r.backend.label} in ${(r.elapsedMs / 1000).toFixed(1)}s`
+      + `${r.seed !== undefined ? ` (seed ${r.seed})` : ""} and saved it to ${rel}.${swap}${note}`
+      + `\nShow it to the user by referencing the path; don't re-generate unless they ask for a change.`;
+  } catch (e: any) {
+    return `Error generating image: ${e.message}`;
+  }
+}
+
 // ─── dispatcher ───────────────────────────────────────────────────────────────
-export async function executeTool(name: string, args: any): Promise<string> {
+export async function executeTool(name: string, args: any, onNotice?: (s: string) => void): Promise<string> {
   name = canonicalToolName(name);
   args = normalizeArgs(args);
   switch (name) {
@@ -854,10 +994,16 @@ export async function executeTool(name: string, args: any): Promise<string> {
     case "task_add": return taskAddTool(args);
     case "task_done": return taskDoneTool(args);
     case "task_list": return taskListTool();
+    case "set_todos": return setTodosTool(args);
+    // propose_plan is normally intercepted by the chat loop (interactive
+    // approval); this fallback only fires in contexts without that UI.
+    case "propose_plan": return "Plan noted. There is no interactive approval available in this context — present the plan as your final answer and wait for the user's reply.";
     case "spawn_agents": return await spawnAgentsTool(args);
     case "browser_console": return await browserConsoleTool();
     case "browser_network": return await browserNetworkTool();
     case "browser_performance": return await browserPerformanceTool();
+    case "search_via_chrome": return await searchViaChromeTool(args);
+    case "generate_image": return await generateImageTool(args, onNotice);
     default: return `Error: Unknown tool: ${name}`;
   }
 }

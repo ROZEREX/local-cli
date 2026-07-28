@@ -8,6 +8,21 @@ body {
   color: #f4f4f5;
 }
 
+/* Incognito: shift the whole backdrop violet so the mode is impossible to
+   mistake at a glance — the indicator has to be readable from across the room,
+   not just findable in a header. */
+body.incognito {
+  background: radial-gradient(1200px 700px at 50% -10%, #1a1626 0%, #0a0810 60%) fixed, #0a0810;
+}
+body.incognito #app > aside,
+body.incognito #app > div {
+  border-color: rgba(167, 139, 250, 0.22);
+}
+/* A steady violet halo around the chat column while the mode is on. */
+body.incognito #app > div {
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(167, 139, 250, 0.14);
+}
+
 /* Mode Buttons Segmented Selector (pill) */
 .mode-btn {
   color: #a1a1aa;

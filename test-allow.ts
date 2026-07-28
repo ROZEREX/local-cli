@@ -39,7 +39,7 @@ const dir = mkdtempSync(join(tmpdir(), "lcli-allow-"));
 
 const run = async () => {
   // bash is always-allowed → permission callback must NOT be called.
-  saveConfig({ cwd: dir, baseUrl: `http://localhost:${server.port}/v1`, apiKey: "t", model: "mock", alwaysAllow: ["bash"], mode: "normal" });
+  saveConfig({ cwd: dir, baseUrl: `http://localhost:${server.port}/v1`, apiKey: "t", model: "mock", alwaysAllow: ["bash"], mode: "normal", toolMode: "native" });
   resetClient();
   let prompted = false;
   await chat([{ role: "system", content: "t" }, { role: "user", content: "run echo" }], {

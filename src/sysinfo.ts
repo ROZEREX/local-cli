@@ -95,9 +95,45 @@ export function modelFitWarning(modelSizeBytes: number | undefined, nativeContex
     return `⚠ "${weightsGB} GB model" vs your ${where}: it won't fully fit, so part runs from system RAM and generation will be very slow (this is what made it hang).${ctxNote} For smooth local work pick a model that fits — see /system (e.g. qwen2.5-coder:7b or qwen3:8b).`;
   }
   if (ctxK > 64 && weightsGB > budget * 0.6) {
-    return `Note: the model fits your ${where}, but its ${ctxK}k context adds a large KV cache that can spill to RAM and slow generation. If it drags, lower it: /config contextWindow 32768.`;
+    const fast = modelSizeBytes ? recommendContextWindow(modelSizeBytes, nativeContext ?? 0, info) : undefined;
+    const fastNote = fast && fast < (nativeContext ?? Infinity)
+      ? ` (a window around ${Math.round(fast / 1024)}k would keep it fully on the GPU)`
+      : "";
+    return `Note: the model fits your ${where}, but a ${ctxK}k context adds a large KV cache that can spill to RAM and slow generation. To KEEP the big context and make it fit, quantize the KV cache: start Ollama with OLLAMA_FLASH_ATTENTION=1 and OLLAMA_KV_CACHE_TYPE=q8_0 (halves KV memory; q4_0 quarters it), or use the vLLM backend, which handles long context far more efficiently. Only lower it (/config contextWindow <n>${fastNote}) if you'd rather trade context for speed.`;
   }
   return null;
+}
+
+// Pick a FAST default context window (→ Ollama num_ctx) for a local model.
+// Ollama pre-allocates the ENTIRE num_ctx KV cache when the model loads, so using
+// a model's theoretical max (e.g. 256k) reserves a giant cache that spills into
+// system RAM and drops generation to ~1 t/s — the classic "fast in `ollama run`,
+// crawls in the app" bug (`ollama run` defaults to a small context). We size the
+// window to the VRAM left after the weights, capped to the model's native max and
+// floored so short chats always work. It's an ESTIMATE (exact KV size needs the
+// model's head dims), and it's only a DEFAULT — the user can raise it explicitly
+// with /config contextWindow <n>.
+const CTX_LADDER = [8192, 16384, 32768, 65536, 131072, 262144];
+// Conservative rough KV-cache cost for a mid/large Q4 model. Real values vary
+// with layers/GQA, so we err toward fitting (a bit small) rather than spilling.
+const KV_GB_PER_8K = 1.5;
+
+export function recommendContextWindow(
+  weightsBytes: number | undefined,
+  nativeMax: number,
+  info: SystemInfo = cachedSystemInfo(), // injectable for tests
+): number {
+  const nativeCap = Math.max(8192, nativeMax || 0);
+  // No weight info, or CPU-only inference (no VRAM ceiling to blow): a safe mid
+  // default beats both a giant KV cache and a cramped 8k window.
+  if (!weightsBytes || info.budgetSource !== "gpu") return Math.min(nativeCap, 32768);
+  const weightsGB = weightsBytes / 1e9;
+  const freeGB = info.budgetGB - weightsGB - 1; // ~1 GB runtime/compute overhead
+  if (freeGB <= 1) return Math.min(nativeCap, 8192); // barely fits — smallest window
+  const maxByVram = Math.floor(freeGB / KV_GB_PER_8K) * 8192;
+  let pick = 8192;
+  for (const c of CTX_LADDER) if (c <= maxByVram && c <= nativeCap) pick = c;
+  return Math.min(pick, nativeCap);
 }
 
 // Per-task recommendations. minGB ≈ memory a Q4 build needs (VRAM, or RAM on CPU).

@@ -253,6 +253,66 @@ export async function modelCapabilities(baseUrl: string, model: string): Promise
   }
 }
 
+// ─── Provider detection (Ollama vs vLLM vs generic OpenAI-compatible) ─────────
+export type Provider = "ollama" | "vllm" | "openai";
+
+// vLLM serves the OpenAI API at /v1 AND exposes a root /version endpoint
+// ({"version":"0.x.y"}) that Ollama (it uses /api/version) and the commercial
+// OpenAI API don't — a reliable-enough signature for a local vLLM server.
+export async function isVllm(baseUrl: string): Promise<boolean> {
+  const host = ollamaHost(baseUrl);
+  try {
+    const res = await fetch(`${host}/version`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return false;
+    const data: any = await res.json().catch(() => null);
+    return !!(data && typeof data.version === "string");
+  } catch {
+    return false;
+  }
+}
+
+// Decide which backend baseUrl points at. `forced` (config.provider) wins unless
+// it's "auto"/undefined, so the user can always pin it.
+export async function detectProvider(baseUrl: string, forced?: string): Promise<Provider> {
+  if (forced === "ollama" || forced === "vllm" || forced === "openai") return forced;
+  try { if (await isOllama(baseUrl)) return "ollama"; } catch { /* network hiccup — keep probing */ }
+  if (await isVllm(baseUrl)) return "vllm";
+  return "openai";
+}
+
+// Normalize a baseUrl to its OpenAI "/v1/models" endpoint regardless of whether
+// baseUrl already ends in /v1.
+function openAIModelsUrl(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
+  return /\/v1$/.test(base) ? `${base}/models` : `${base}/v1/models`;
+}
+
+// List models from an OpenAI-compatible /v1/models endpoint (vLLM, LM Studio,
+// llama.cpp, …). Returns the same shape as the Ollama listing so the picker and
+// /models can render either backend uniformly. vLLM includes max_model_len, so
+// we surface it as the native context length.
+export async function listOpenAIModels(baseUrl: string): Promise<OllamaModelInfo[]> {
+  const res = await fetch(openAIModelsUrl(baseUrl), { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`/v1/models returned ${res.status}`);
+  const data: any = await res.json();
+  return (data.data ?? [])
+    .map((m: any): OllamaModelInfo => ({
+      name: m.id,
+      contextLength: typeof m.max_model_len === "number" ? m.max_model_len : undefined,
+    }))
+    .filter((m: OllamaModelInfo) => m.name)
+    .sort((a: OllamaModelInfo, b: OllamaModelInfo) => a.name.localeCompare(b.name));
+}
+
+// Provider-aware model list for the picker / /models. Ollama gets the rich
+// per-model context+caps via /api/show; any OpenAI-compatible server (vLLM, …)
+// gets whatever /v1/models reports.
+export async function listModelsForPicker(baseUrl: string, forced?: string): Promise<OllamaModelInfo[]> {
+  const provider = await detectProvider(baseUrl, forced);
+  if (provider === "ollama") return listOllamaModelsWithContext(baseUrl);
+  return listOpenAIModels(baseUrl);
+}
+
 export async function isOllama(baseUrl: string): Promise<boolean> {
   const host = ollamaHost(baseUrl);
   if (host.includes("11434") || host.toLowerCase().includes("ollama")) {

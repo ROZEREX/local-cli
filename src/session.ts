@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlink
 import { homedir } from "os";
 import { join } from "path";
 import { createHash } from "crypto";
+import { isIncognito } from "./incognito";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 export interface Session {
@@ -37,6 +38,7 @@ export function deriveTitle(history: ChatCompletionMessageParam[]): string {
 }
 
 export function saveSession(session: Session): void {
+  if (isIncognito()) return; // incognito conversations never touch the disk
   const dir = sessionsDir(session.cwd);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${session.id}.json`), JSON.stringify(session, null, 2));

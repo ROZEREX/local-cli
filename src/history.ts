@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync, mkdirSync, statSync } from "fs";
 import { join, dirname, relative, resolve, isAbsolute } from "path";
 import { getConfig } from "./config";
+import { isIncognito } from "./incognito";
 
 // Undo system. Every mutating file operation (write_file / edit_file /
 // delete_file) records a snapshot patch in <project>/.local-cli/history/ so the
@@ -54,6 +55,10 @@ export function recordFileChange(
   after: string | null
 ): void {
   try {
+    // A snapshot stores the FULL before/after contents of the file — the single
+    // most revealing thing this app writes. Incognito skips it, at the cost of
+    // /undo being unavailable for the session (disclosed in the UI).
+    if (isIncognito()) return;
     if ((before?.length ?? 0) > MAX_SNAPSHOT_BYTES || (after?.length ?? 0) > MAX_SNAPSHOT_BYTES) return;
     if (before === after) return; // no-op
     const dir = historyDir();

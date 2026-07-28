@@ -30,7 +30,7 @@ const server = Bun.serve({
   },
 });
 
-saveConfig({ baseUrl: `http://localhost:${server.port}/v1`, apiKey: "t", model: "mock", toolMode: "auto", thinking: false, cwd: process.cwd() });
+saveConfig({ baseUrl: `http://localhost:${server.port}/v1`, apiKey: "t", model: "mock", toolMode: "native", thinking: false, cwd: process.cwd() });
 resetClient();
 
 // A conversation that already contains a completed tool call + its result — the

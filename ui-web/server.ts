@@ -10,7 +10,11 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import {
   chat, estimateTokens, resetClient, warmUp, summarizeConversation, compactHistory,
 } from "../src/llm";
-import { getConfig, saveConfig } from "../src/config";
+import { getConfig, saveConfig, resetConfigCache } from "../src/config";
+import {
+  isIncognito, setIncognito, incognitoState, remoteBackendWarning,
+  SUPPRESSED, NOT_PROTECTED,
+} from "../src/incognito";
 import { systemPrompt, type Mode } from "../src/prompt";
 import { ThinkSplitter } from "../src/think";
 import { listOllamaModelsDetailed, modelInfo, loadedModels, modelCapabilities, modelDiskSize } from "../src/ollama";
@@ -31,6 +35,7 @@ import {
   browserStartScreencast, browserStopScreencast, browserIsOpen,
 } from "../src/browser";
 import { setExtension, resolveCommand, extensionConnected } from "../src/extbridge";
+import { closePrivateChrome } from "../src/web-search";
 
 const PUBLIC = join(import.meta.dir, "public");
 const PORT = Number(process.env.PORT ?? 4317);
@@ -66,6 +71,7 @@ function systemFingerprint(mode: Mode): string {
     mode, cfg.model, cfg.cwd, cfg.packageManager,
     getActiveProfileName() ?? "", (readActiveProfile() ?? "").length,
     extensionConnected() ? "ext" : "",
+    isIncognito() ? "incognito" : "",
   ].join("|");
 }
 
@@ -79,6 +85,10 @@ function configPayload() {
     extConnected: extensionConnected(),
     keepAlive: cfg.keepAlive ?? "(ollama default, 5m)", numGpu: cfg.numGpu ?? null, numThread: cfg.numThread ?? null,
     maxTokens: cfg.maxTokens, temperature: cfg.temperature,
+    incognito: incognitoState(),
+    // "Nothing leaves the machine" is only true when the backend is on it.
+    backendWarning: remoteBackendWarning(cfg.baseUrl),
+    suppressed: SUPPRESSED, notProtected: NOT_PROTECTED,
   };
 }
 
@@ -122,6 +132,7 @@ function summarize(name: string, argsJson: string): string {
     case "browser_click": return a.target ?? a.selector ?? a.text ?? "";
     case "browser_type": return `${a.target ?? a.selector ?? ""}: "${a.text ?? ""}"`;
     case "browser_screenshot": case "screenshot": return a.question ?? "";
+    case "generate_image": return a.prompt ?? "";
     case "browser_scroll": case "page_scroll": return a.to ?? "down";
     case "page_open": case "page_navigate": return a.url ?? "";
     case "page_click": case "page_highlight": return a.target ?? "";
@@ -136,6 +147,7 @@ function permDetail(name: string, a: any): string {
   if (name === "edit_file") return `edit ${a.path}`;
   if (name === "delete_file") return `delete ${a.path}`;
   if (name === "update_profile") return `save to coding profile`;
+  if (name === "generate_image") return `generate an image: "${a.prompt}"${a.path ? ` → ${a.path}` : ""}`;
   if (name === "browser_type" || name === "page_type") return `type "${a.text}" into ${a.target}`;
   return JSON.stringify(a);
 }
@@ -146,6 +158,10 @@ function pushContext(ws: ServerWebSocket<WSData>) {
 function pushConfig(ws: ServerWebSocket<WSData>) { send(ws, { t: "config", config: configPayload() }); }
 
 function autosave(ws: ServerWebSocket<WSData>) {
+  // saveSession() also refuses in incognito, but returning here keeps us from
+  // even building the record — and from re-sending a chat list this session
+  // will never appear in.
+  if (isIncognito()) return;
   const hist = ws.data.history;
   if (!hist.some(m => m.role === "user")) return;
   const cfg = getConfig();
@@ -203,6 +219,20 @@ async function runChat(ws: ServerWebSocket<WSData>, userText: string, echo = tru
         onToolCall: (name, args) => send(ws, { t: "tool_call", name, summary: summarize(name, args) }),
         onToolResult: async (name, result) => {
           send(ws, { t: "tool_result", name, result });
+          // A generated image is the point of the request — show it inline
+          // rather than making the user go find the PNG on disk.
+          if (name === "generate_image") {
+            const mPath = result.match(/saved it to (.+?)\.\s/);
+            if (mPath?.[1]) {
+              try {
+                const abs = resolve(getConfig().cwd, mPath[1]);
+                const file = Bun.file(abs);
+                if (await file.exists()) {
+                  send(ws, { t: "image", path: mPath[1], data: Buffer.from(await file.arrayBuffer()).toString("base64") });
+                }
+              } catch {}
+            }
+          }
           if (name.startsWith("browser_") && name !== "browser_close") {
             // The browser is open now — start the live screencast so the user
             // watches the rest of the agent's browsing in real time.
@@ -220,6 +250,7 @@ async function runChat(ws: ServerWebSocket<WSData>, userText: string, echo = tru
         onNotice: (v) => send(ws, { t: "notice", v }),
         onStatus: (phase) => send(ws, { t: "status", phase }),
         onUsage: (u) => send(ws, { t: "usage", inTok: u.inputTokens, outTok: u.outputTokens, tps: u.tokPerSec }),
+        onLoopWarning: (info) => send(ws, { t: "loop_warning", ...info }),
         onProgress: (tok) => send(ws, { t: "progress", tok }),
         requestPermission: (name, args) => new Promise<boolean>((res) => {
           const id = ++ws.data.seq; ws.data.pending.set(id, res);
@@ -230,7 +261,12 @@ async function runChat(ws: ServerWebSocket<WSData>, userText: string, echo = tru
           send(ws, { t: "choice", id, question, options });
         }),
       },
-      { signal: ws.data.abort.signal, planMode: ws.data.mode === "plan", autoAccept: ws.data.mode === "auto" }
+      {
+        signal: ws.data.abort.signal,
+        planMode: ws.data.mode === "plan",
+        chatMode: ws.data.mode === "chat",
+        autoAccept: ws.data.mode === "auto",
+      }
     );
     emitText(null);
   } catch (e: any) {
@@ -255,6 +291,44 @@ function newChat(ws: ServerWebSocket<WSData>) {
   pushContext(ws);
 }
 
+// ── incognito ──────────────────────────────────────────────────────────────
+// The flag is process-wide on purpose: the persistence guards live inside the
+// shared modules (config, session, memory, history…), so a per-tab flag would
+// be a lie the moment a second tab was open. Toggling it therefore affects
+// every connected client, and every client is told.
+function toggleIncognito(on: boolean) {
+  if (!setIncognito(on)) return; // already in that state
+
+  if (!on) {
+    // Discard every config change made during the session — saveConfig kept
+    // them in memory only, so re-reading disk is what makes them disappear.
+    resetConfigCache();
+    // Tear down the throwaway search browser and delete its profile directory.
+    void closePrivateChrome();
+  }
+
+  // Wipe the in-flight conversation on BOTH edges. Entering: so a chat that was
+  // already autosaved doesn't continue into (and get mixed with) incognito
+  // content. Leaving: so incognito content can't end up in the next autosave.
+  for (const c of uiClients) {
+    try {
+      c.data.abort?.abort();
+      c.data.history = freshHistory(c.data.mode);
+      c.data.sessionId = newSessionId();
+      c.data.createdAt = Date.now();
+      c.data.sysFp = undefined; // force a system-prompt rebuild with/without the incognito block
+      send(c, { t: "cleared" });
+      send(c, { t: "incognito", state: incognitoState(), backendWarning: remoteBackendWarning(getConfig().baseUrl) });
+      send(c, { t: "config", config: configPayload() });
+      send(c, { t: "sessions", list: on ? [] : listSessions(getConfig().cwd), active: c.data.sessionId });
+      pushContext(c);
+    } catch {}
+  }
+  console.log(on
+    ? "  ◆ incognito ON — session persistence and outbound search are disabled"
+    : "  ◆ incognito OFF — normal persistence resumed");
+}
+
 const handlers: any = {
   async fetch(req: Request, server: any) {
     const url = new URL(req.url);
@@ -276,7 +350,7 @@ const handlers: any = {
       const name = url.searchParams.get("name") || getConfig().model;
       return Response.json((await modelInfo(getConfig().baseUrl, name).catch(() => null)) ?? {});
     }
-    if (url.pathname === "/api/sessions") return Response.json(listSessions(getConfig().cwd));
+    if (url.pathname === "/api/sessions") return Response.json(isIncognito() ? [] : listSessions(getConfig().cwd));
     if (url.pathname === "/api/profiles") return Response.json({ names: listProfileNames(), active: getActiveProfileName() });
     if (url.pathname === "/api/profile") {
       const name = url.searchParams.get("name") || getActiveProfileName() || "";
@@ -322,7 +396,10 @@ const handlers: any = {
       uiClients.add(ws);
       send(ws, { t: "ready", config: configPayload() });
       send(ws, { t: "mode", mode: ws.data.mode });
-      send(ws, { t: "sessions", list: listSessions(getConfig().cwd), active: ws.data.sessionId });
+      // A tab opened while incognito is already on joins it — the guards are
+      // process-wide, so showing it anything else would be misleading.
+      send(ws, { t: "incognito", state: incognitoState(), backendWarning: remoteBackendWarning(getConfig().baseUrl) });
+      send(ws, { t: "sessions", list: isIncognito() ? [] : listSessions(getConfig().cwd), active: ws.data.sessionId });
       pushContext(ws);
       void warmUp();
     },
@@ -351,12 +428,16 @@ const handlers: any = {
         case "choice": { const r = ws.data.pending.get(m.id); if (r) { ws.data.pending.delete(m.id); r(String(m.answer ?? "")); } break; }
         case "interrupt": ws.data.abort?.abort(); break;
         case "new": newChat(ws); break;
-        case "set_mode": if (["normal", "plan", "auto", "debug"].includes(m.mode)) { ws.data.mode = m.mode; saveConfig({ mode: m.mode }); send(ws, { t: "mode", mode: m.mode }); } break;
+        case "set_incognito": toggleIncognito(!!m.on); break;
+        case "set_mode": if (["normal", "chat", "plan", "auto", "debug"].includes(m.mode)) { ws.data.mode = m.mode; saveConfig({ mode: m.mode }); send(ws, { t: "mode", mode: m.mode }); } break;
         case "set_thinking": saveConfig({ thinking: !!m.on }); pushConfig(ws); break;
         case "set_pm": if (["auto", "bun", "npm", "pnpm", "yarn"].includes(m.pm)) { saveConfig({ packageManager: m.pm }); pushConfig(ws); } break;
         case "set_profile": if (typeof m.name === "string") { setActiveProfile(m.name); pushConfig(ws); send(ws, { t: "notice", v: `Active coding profile: ${m.name}` }); } break;
         case "del_profile": if (typeof m.name === "string") { deleteProfileByName(m.name); pushConfig(ws); } break;
         case "learn": {
+          // Profile writes are blocked at the writer — stop here rather than
+          // burning a full agent turn producing something we'd then discard.
+          if (isIncognito()) { send(ws, { t: "error", v: "Learning a coding profile writes to ~/.local-cli/profiles/ — disabled while incognito is on." }); break; }
           const name = (typeof m.name === "string" && m.name.trim()) || getActiveProfileName() || "default";
           setActiveProfile(name); pushConfig(ws);
           void runChat(ws, learnProfileInstruction(profileFilePath(name), name), true);
@@ -403,7 +484,7 @@ const handlers: any = {
           if (dir && existsSync(dir) && statSync(dir).isDirectory()) {
             saveConfig({ cwd: dir }); pushConfig(ws);
             newChat(ws);
-            send(ws, { t: "sessions", list: listSessions(dir), active: ws.data.sessionId });
+            send(ws, { t: "sessions", list: isIncognito() ? [] : listSessions(dir), active: ws.data.sessionId });
             send(ws, { t: "notice", v: `Working directory set to ${dir}` });
           } else { send(ws, { t: "error", v: `Not a directory: ${p}` }); }
           break;
@@ -420,6 +501,9 @@ const handlers: any = {
           break;
         }
         case "load_session": {
+          // Keep incognito hermetic in both directions: a saved chat doesn't get
+          // pulled in, and nothing here can be confused for a resumable one.
+          if (isIncognito()) { send(ws, { t: "error", v: "Saved chats can't be opened while incognito is on — turn it off first." }); break; }
           const s = loadSession(getConfig().cwd, String(m.id));
           if (s) {
             ws.data.history = s.history; ws.data.sessionId = s.id; ws.data.createdAt = s.createdAt;

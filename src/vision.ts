@@ -51,39 +51,13 @@ export async function analyzeImage(base64: string, question: string): Promise<st
   let activeHasVision = false;
 
   if (isOll) {
-    // 1. First check if the active model itself is explicitly a vision model or has capability
+    // First check if the active model itself is explicitly a vision model or has capability
     activeHasVision = isExplicitVisionModel(cfg.model);
     if (!activeHasVision) {
       try {
         const activeCaps = await modelCapabilities(cfg.baseUrl, cfg.model);
         if (activeCaps.includes("vision")) {
           activeHasVision = true;
-        }
-      } catch {}
-    }
-
-    // 2. If active model is not vision, look for an installed model that is
-    if (!activeHasVision) {
-      try {
-        const installed = await listOllamaModelsDetailed(cfg.baseUrl).catch(() => []);
-        // Match by name first
-        for (const m of installed) {
-          if (isExplicitVisionModel(m.name)) {
-            visionModel = m.name;
-            activeHasVision = true;
-            break;
-          }
-        }
-        // Match by capability if name didn't match
-        if (!activeHasVision) {
-          for (const m of installed) {
-            const info = await modelInfo(cfg.baseUrl, m.name).catch(() => null);
-            if (info?.capabilities?.includes("vision")) {
-              visionModel = m.name;
-              activeHasVision = true;
-              break;
-            }
-          }
         }
       } catch {}
     }

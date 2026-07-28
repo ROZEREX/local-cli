@@ -64,7 +64,7 @@ const server = Bun.serve({
 
 const baseUrl = `http://localhost:${server.port}/v1`;
 const dir = mkdtempSync(join(tmpdir(), "localcli-llm-"));
-saveConfig({ cwd: dir, baseUrl, apiKey: "test", model: "mock" });
+saveConfig({ cwd: dir, baseUrl, apiKey: "test", model: "mock", toolMode: "native" });
 resetClient(); // ensure the OpenAI client picks up the new baseUrl
 
 const run = async () => {

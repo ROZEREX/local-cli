@@ -30,6 +30,8 @@ let liveBadgeTimer = null, autoSwitched = false, liveViewOn = false;
 let state = { model: "", cwd: "", contextWindow: 0, thinking: true, packageManager: "auto", activeProfile: null, profiles: [], availablePM: [] };
 let mode = "normal";
 let browserBusy = false;
+let incognito = { on: false, since: null };
+let backendWarning = "";
 
 // ── markdown ──
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -141,7 +143,8 @@ const TOOL_IC = {
   browser_screenshot: "image", browser_scroll: "chevrons-up-down", browser_close: "x-circle", screenshot: "monitor",
   page_open: "globe-2", page_navigate: "navigation", page_read: "book-open", 
   page_find: "search-code", page_click: "mouse-pointer-click", page_type: "keyboard",
-  page_highlight: "highlighter", page_scroll: "chevrons-up-down"
+  page_highlight: "highlighter", page_scroll: "chevrons-up-down",
+  search_via_chrome: "globe", generate_image: "image-plus"
 };
 
 function addTool(name, summary) {
@@ -185,6 +188,18 @@ function addNote(v, kind) {
   const cls = kind === "error" ? "text-danger bg-red-950/20 border-red-900/30" : "text-dim bg-zinc-900/50 border-edge";
   d.className = `text-[12px] font-mono rounded-xl border px-3.5 py-2 animate-rise ${cls}`;
   d.textContent = v; messages.appendChild(d); scroll();
+}
+
+// A generated image, shown inline. Click to open it full size in a new tab.
+function addImage(path, base64) {
+  finishStreaming();
+  const src = `data:image/png;base64,${base64}`;
+  const d = document.createElement("div");
+  d.className = "rounded-2xl border border-edge bg-panel overflow-hidden animate-rise max-w-lg";
+  d.innerHTML = `<img src="${src}" alt="${esc(path)}" class="w-full h-auto block cursor-zoom-in" />
+    <div class="px-3.5 py-2 text-[11px] font-mono text-dim border-t border-edge/60 truncate">${esc(path)}</div>`;
+  d.querySelector("img").onclick = () => { const w = window.open(); if (w) w.document.write(`<img src="${src}" style="max-width:100%">`); };
+  messages.appendChild(d); scroll();
 }
 
 function mkBtn(label, cls, onClick) {
@@ -245,6 +260,12 @@ function setContext(used, limit) {
 // ── sessions ──
 function renderSessions(list, active) {
   const box = $("#sessions"); box.innerHTML = "";
+  if (incognito.on) {
+    box.innerHTML = `<div class="mx-2 mt-2 px-3.5 py-3 rounded-2xl border border-incog/25 bg-incogdeep text-[11px] text-zinc-400 leading-relaxed">
+      <div class="text-incog font-semibold mb-1">Chats hidden</div>
+      This session isn't saved, and saved chats can't be opened while incognito is on.</div>`;
+    return;
+  }
   if (!list.length) { box.innerHTML = `<div class="text-dim text-xs px-4 py-4">No saved chats yet.</div>`; return; }
   for (const s of list) {
     const row = document.createElement("div");
@@ -290,6 +311,7 @@ function applyConfig(c) {
   $("#think-btn").classList.toggle("text-white", !!c.thinking);
   $("#think-btn").classList.toggle("border-zinc-400", !!c.thinking);
   const eb = $("#ext-badge"); if (eb) { eb.classList.toggle("hidden", !c.extConnected); eb.classList.toggle("flex", !!c.extConnected); }
+  if (c.incognito) applyIncognito(c.incognito, c.backendWarning);
   
   // Refresh profiles if tab is open
   const actTab = localStorage.getItem("lcli-active-tab");
@@ -303,6 +325,99 @@ function applyConfig(c) {
   }
 }
 function setMode(m) { mode = m; $$("#mode .mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === m)); }
+
+// ── possible-loop warning ──
+// Deliberately NOT a stop. The detector fires on legitimate work (re-reading a
+// file, re-running a test whose output hasn't changed yet), so the decision is
+// the user's — we just make it visible and put Stop within one click.
+function showLoopWarning(m) {
+  const bar = $("#loop-warn");
+  $("#loop-warn-text").textContent = m.willStop
+    ? `${m.tool} repeated with identical results — stopping.`
+    : `${m.tool} has repeated with the same result ${m.trips > 1 ? `(${m.trips} times) ` : ""}— it may be stuck, or it may just be working. Still running; nudged it to change approach.`;
+  bar.classList.remove("hidden"); bar.classList.add("flex");
+  icons();
+}
+function hideLoopWarning() { const b = $("#loop-warn"); b.classList.add("hidden"); b.classList.remove("flex"); }
+
+// ── incognito ──
+// The server owns the flag (it's process-wide), so this only ever REFLECTS what
+// the server reported. Never flip the local state optimistically — the whole
+// point of the mode is that the indicator can be trusted.
+function applyIncognito(st, warning) {
+  incognito = st || { on: false, since: null };
+  if (typeof warning === "string") backendWarning = warning;
+  const on = incognito.on;
+
+  document.body.classList.toggle("incognito", on);
+  $("#incog-bar").classList.toggle("hidden", !on);
+
+  const btn = $("#incognito-btn");
+  btn.classList.toggle("text-incog", on);
+  btn.classList.toggle("border-incog", on);
+  btn.classList.toggle("bg-incog/10", on);
+  btn.classList.toggle("text-dim", !on);
+  btn.classList.toggle("border-edge", !on);
+  btn.title = on ? "Incognito is ON — click for details" : "Incognito — nothing written to disk, nothing sent off this machine";
+
+  // The banner leads with the honest caveat rather than the reassurance.
+  const sub = $("#incog-sub");
+  if (on && backendWarning) {
+    sub.textContent = backendWarning;
+    sub.className = "text-[11px] text-warn";
+  } else {
+    sub.textContent = "No transcript, memory, profile or undo snapshot. Lookups run in a throwaway browser. File edits still change your disk, and /undo is off.";
+    sub.className = "text-[11px] text-zinc-400 truncate";
+  }
+  icons();
+}
+
+const listHTML = (items, dotClass) => items.map(i => `
+  <li class="flex gap-2.5">
+    <span class="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}"></span>
+    <span><b class="text-white font-semibold">${esc(i.label)}</b><span class="text-zinc-400"> — ${esc(i.detail)}</span></span>
+  </li>`).join("");
+
+function incognitoInfoModal() {
+  const sup = state.suppressed || [], np = state.notProtected || [];
+  openModal(`Incognito${incognito.on ? " — on" : ""}`, `
+    <div class="space-y-5 text-[12px] leading-relaxed">
+      ${backendWarning ? `<div class="rounded-2xl border border-warn/40 bg-warn/10 px-4 py-3 text-warn">${esc(backendWarning)}</div>` : ""}
+      <div>
+        <h4 class="text-[11px] uppercase tracking-wider font-bold text-incog mb-2.5">What it stops</h4>
+        <ul class="space-y-2">${listHTML(sup, "bg-incog")}</ul>
+      </div>
+      <div>
+        <h4 class="text-[11px] uppercase tracking-wider font-bold text-warn mb-2.5">What it does NOT protect</h4>
+        <ul class="space-y-2">${listHTML(np, "bg-warn")}</ul>
+      </div>
+      <p class="text-[11px] text-dim border-t border-edge pt-3.5">
+        Turning incognito on or off clears the current conversation in every open tab — that's what keeps the two kinds of session from mixing.
+        Chats saved <i>before</i> you switched it on are left alone; delete those yourself if you don't want them.
+      </p>
+    </div>`);
+}
+
+function toggleIncognito() {
+  if (incognito.on) { send({ t: "set_incognito", on: false }); return; }
+  const sup = state.suppressed || [];
+  openModal("Turn on incognito?", `
+    <div class="space-y-4 text-[12px] leading-relaxed">
+      <p class="text-zinc-300">Nothing from this point on is written to disk by this app, and no tool may reach the network.</p>
+      <ul class="space-y-2">${listHTML(sup, "bg-incog")}</ul>
+      <div class="rounded-2xl border border-warn/40 bg-warn/10 px-4 py-3 text-warn">
+        It is <b>not</b> a sandbox. Files the agent edits and commands it runs still change your machine — and with undo snapshots off, those edits can't be rolled back from here.
+      </div>
+      ${backendWarning ? `<div class="rounded-2xl border border-warn/40 bg-warn/10 px-4 py-3 text-warn">${esc(backendWarning)}</div>` : ""}
+      <p class="text-dim text-[11px]">The current conversation will be cleared in every open tab.</p>
+      <div class="flex gap-2 pt-1">
+        <button id="incog-go" class="px-4 py-2 rounded-full bg-incog text-black font-bold text-xs hover:opacity-90 transition">Turn on incognito</button>
+        <button id="incog-cancel" class="px-4 py-2 rounded-full border border-edge text-zinc-400 text-xs hover:text-white transition">Cancel</button>
+      </div>
+    </div>`);
+  $("#incog-go").onclick = () => { send({ t: "set_incognito", on: true }); closeModal(); };
+  $("#incog-cancel").onclick = closeModal;
+}
 
 // ── websocket ──
 const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
@@ -332,6 +447,22 @@ function connect() {
       case "choice": addAsk(m); break;
       case "context": setContext(m.used, m.limit); break;
       case "mode": setMode(m.mode); break;
+      case "loop_warning": showLoopWarning(m); break;
+      case "image": addImage(m.path, m.data); break;
+      case "incognito": {
+        // The server also sends this on connect to sync a tab that joined an
+        // already-incognito process — announce a real CHANGE, not the handshake.
+        const changed = incognito.on !== !!m.state.on;
+        applyIncognito(m.state, m.backendWarning);
+        if (changed) {
+          addNote(m.state.on
+            ? "Incognito on — this conversation is not being saved. Lookups go through a throwaway browser, so nothing lands in your Chrome history (but a search engine still sees the query — never ask it to look up a secret). File edits still change your disk and can't be undone from here."
+            : "Incognito off — chats are saved again. Nothing from the incognito session was written, and settings you changed during it were discarded.", "info");
+        } else if (m.state.on) {
+          addNote("Incognito is on — this conversation is not being saved.", "info");
+        }
+        break;
+      }
       case "sessions": renderSessions(m.list, m.active); break;
       case "load": renderLoaded(m.messages); break;
       case "servers": renderDashboardServers(m.list); break;
@@ -340,7 +471,7 @@ function connect() {
       case "browser_frame": renderBrowserFrame(m.data); break;
       case "browser_live": liveViewOn = !!m.on; $("#dash-b-live-btn").classList.toggle("text-grn", liveViewOn); break;
       case "cleared": messages.innerHTML = ""; cur = null; pendingTools = []; break;
-      case "turn_end": finishStreaming(); stopLive(); setBrowserAction(null); autoSwitched = false; if (m.mode === "plan") showPlanApprove(); break;
+      case "turn_end": finishStreaming(); stopLive(); setBrowserAction(null); hideLoopWarning(); autoSwitched = false; if (m.mode === "plan") showPlanApprove(); break;
     }
   };
 }
@@ -713,11 +844,14 @@ const COMMANDS = [
   ["ports — free a stuck port", () => setTab("runtime")],
   ["/init — generate project context", () => send({ t: "init" })],
   ["compact — shrink the conversation", () => send({ t: "compact" })],
+  ["mode: chat (talk only — never creates files)", () => { setMode("chat"); send({ t: "set_mode", mode: "chat" }); }],
   ["mode: auto (run by itself)", () => { setMode("auto"); send({ t: "set_mode", mode: "auto" }); }],
   ["mode: plan (research first)", () => { setMode("plan"); send({ t: "set_mode", mode: "plan" }); }],
   ["mode: debug (investigate via logs, console, network)", () => { setMode("debug"); send({ t: "set_mode", mode: "debug" }); }],
   ["mode: normal (ask per action)", () => { setMode("normal"); send({ t: "set_mode", mode: "normal" }); }],
   ["attach files to context", attachModal],
+  ["incognito — don't save this chat", toggleIncognito],
+  ["incognito — what it does & doesn't protect", incognitoInfoModal],
 ];
 
 function commandsModal() {
@@ -944,6 +1078,11 @@ $("#attach").addEventListener("click", attachModal);
 $("#model-info").addEventListener("click", modelInfoModal);
 $("#compact-btn").addEventListener("click", () => send({ t: "compact" }));
 $("#think-btn").addEventListener("click", () => send({ t: "set_thinking", on: !state.thinking }));
+$("#incognito-btn").addEventListener("click", toggleIncognito);
+$("#loop-warn-stop").addEventListener("click", () => { send({ t: "interrupt" }); hideLoopWarning(); });
+$("#loop-warn-ok").addEventListener("click", hideLoopWarning);
+$("#incog-what").addEventListener("click", incognitoInfoModal);
+$("#incog-off").addEventListener("click", () => send({ t: "set_incognito", on: false }));
 $("#sidebar-commands").addEventListener("click", commandsModal);
 $$("#mode .mode-btn").forEach(b => b.addEventListener("click", () => { setMode(b.dataset.mode); send({ t: "set_mode", mode: b.dataset.mode }); }));
 

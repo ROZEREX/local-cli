@@ -33,8 +33,19 @@ Open **http://localhost:4317** (set `PORT` to change it).
 - **Models** — switch from the header; the **ℹ️ model details** modal shows
   parameters, quantization, family, native context length, and capabilities. The
   context window auto-adapts to the model on switch.
-- **Modes** — normal / plan / auto-accept toggle. In plan mode the agent proposes
+- **Modes** — chat / normal / plan / auto-accept / debug. **chat** is talk-only:
+  mutating tools are blocked in the agent loop, so asking for a list gets you a
+  list in the message instead of a new component. In plan mode the agent proposes
   a plan and an **Approve & build** button appears.
+- **Incognito** — a session that writes nothing to disk: no transcript, config
+  change, project memory, coding profile, undo snapshot or code index, and
+  lookups run through a throwaway browser that leaves no trace in your Chrome.
+  The panel lists exactly what it does *not* protect (file edits are still real).
+- **Images** — `generate_image` renders inline, via a local ComfyUI / A1111 /
+  SwarmUI server (auto-detected; nothing leaves the machine).
+- **Loop warnings** — a repeated tool call surfaces an advisory strip with a
+  **Stop now** button instead of killing the turn, since the detector fires on
+  legitimate work too. Set `loopAction: "stop"` for the old auto-abort.
 - **Profiles** — list, switch active, view, delete, and **Learn** a new coding
   profile from the current project.
 - **Background servers** — a panel lists `run_server` processes with status + URL,

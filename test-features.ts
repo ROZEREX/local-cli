@@ -47,7 +47,7 @@ const run = async () => {
   });
 
   const dir = mkdtempSync(join(tmpdir(), "localcli-feat-"));
-  saveConfig({ cwd: dir, baseUrl: `http://localhost:${planServer.port}/v1`, apiKey: "t", model: "mock" });
+  saveConfig({ cwd: dir, baseUrl: `http://localhost:${planServer.port}/v1`, apiKey: "t", model: "mock", toolMode: "native" });
   resetClient();
 
   let blockedResult = "";

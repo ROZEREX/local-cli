@@ -117,7 +117,7 @@ const run = async () => {
       () => textTurn("Done exploring."),
     ];
     const { server, streamCalls } = mockServer((turn) => (script[turn - 1] ?? (() => textTurn("Done exploring.")))());
-    saveConfig({ cwd: dir, baseUrl: `http://localhost:${server.port}/v1`, apiKey: "t", model: "mock", mode: "auto" });
+    saveConfig({ cwd: dir, baseUrl: `http://localhost:${server.port}/v1`, apiKey: "t", model: "mock", mode: "auto", toolMode: "native" });
     resetClient();
     const notices: string[] = [];
     const hist = await chat(

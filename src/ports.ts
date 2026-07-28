@@ -78,8 +78,14 @@ export function listListeningPorts(): PortEntry[] {
 
 export function killPid(pid: number): boolean {
   try {
-    if (platform() === "win32") spawnSync("taskkill", ["/PID", String(pid), "/F", "/T"], { shell: true });
-    else process.kill(pid, "SIGKILL");
+    if (platform() === "win32") {
+      // taskkill failing (access denied, protected process) does NOT throw —
+      // check its exit code, or killPort would report "freed" for a kill that
+      // never happened.
+      const r = spawnSync("taskkill", ["/PID", String(pid), "/F", "/T"], { shell: true });
+      return r.status === 0;
+    }
+    process.kill(pid, "SIGKILL");
     return true;
   } catch { return false; }
 }

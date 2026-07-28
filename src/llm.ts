@@ -3,11 +3,14 @@ import type { ChatCompletionMessageParam, ChatCompletionChunk } from "openai/res
 import { getConfig } from "./config";
 import { TOOL_DEFINITIONS } from "./tools/definitions";
 import { executeTool, canonicalToolName } from "./tools/executor";
-import { detectToolSupport, isOllama, modelCapabilities, loadedModels } from "./ollama";
-import { parseToolCalls, ProseFilter, NarrationFilter } from "./toolparse";
+import { detectToolSupport, isOllama, detectProvider, modelCapabilities, loadedModels, type Provider } from "./ollama";
+import { parseToolCalls, parseLeakedToolCall, ProseFilter, NarrationFilter } from "./toolparse";
 import { RepetitionGuard, HarmonyFilter, ToolLoopGuard } from "./think";
 import { promptedToolInstructions } from "./prompt";
 import { drainServerErrors } from "./proc";
+import { noteUserTurn, noteToolOutcome, buildRuntimeOverride, isAwaitingScaffold } from "./orchestrator-state";
+import http from "node:http";
+import https from "node:https";
 
 let _client: OpenAI | null = null;
 
@@ -26,6 +29,7 @@ function getClient(): OpenAI {
 export function resetClient() {
   _client = null;
   _isOllamaCache = null;
+  _providerCache = null;
 }
 
 // Connection errors worth one retry (cold model load can drop the socket).
@@ -33,6 +37,22 @@ function isTransient(err: any): boolean {
   if (err?.name === "AbortError") return false;
   const m = String(err?.message ?? err).toLowerCase();
   return ["socket", "econnreset", "connection", "terminated", "fetch failed", "network", "timeout", "timed out", "etimedout"].some(s => m.includes(s));
+}
+
+// The native /api/chat backend parses tool calls server-side from the model's
+// output. Several local backends intermittently emit malformed/truncated tool-call
+// JSON and reject the turn — NOT a missing-tools or model-capability problem:
+//   - Ollama + gpt-oss/harmony:  "error parsing tool call" (e.g. raw='{"}')
+//   - llama-server + Qwen3-Coder: "invalid tool call arguments for \"bash\":
+//     unexpected end of JSON input" (the args object was cut off — common when the
+//     model emits a big/multi-line command that its JSON encoder truncates).
+// We detect all of these so we can retry once and then fall back to PROMPTED
+// tool-calling, which never sends `tools` (so the server-side parser never runs)
+// and passes bodies RAW — no JSON escaping to truncate. That fallback is the fix.
+function isOllamaToolParseError(msg: string): boolean {
+  return /parsing tool call/i.test(msg)
+    || /invalid tool call arguments/i.test(msg)
+    || /unexpected end of json/i.test(msg);
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -60,13 +80,25 @@ class StreamWatchdog {
   private readonly startedAt = Date.now();
   private _firedAbort = false;
   private disarmed = false;
+  // Whether the model is already resident: "prefill" means the wait is the model
+  // crunching the prompt (GPU busy — compute, not a freeze); "loading" means it's
+  // still being read into memory. Set once reportTurnStart() resolves.
+  private phase: "loading" | "prefill" = "loading";
+
+  setPhase(p: "loading" | "prefill"): void { this.phase = p; }
 
   constructor(callbacks: StreamCallbacks, abort: () => void, heartbeatSec: number, timeoutSec: number, label: string) {
     if (heartbeatSec > 0) {
       this.heartbeat = setInterval(() => {
         if (this.disarmed) return;
         const s = Math.round((Date.now() - this.startedAt) / 1000);
-        callbacks.onNotice?.(`Still waiting for ${label} — the model is likely loading into VRAM (${s}s elapsed).`);
+        const msg = this.phase === "prefill"
+          ? `Still working — the model is processing the prompt (${s}s). The GPU is busy; this is compute, not a freeze. A large context window or a model that spills into system RAM makes this slow.`
+          : `Still waiting — loading the model into memory (${s}s). A cold load of a large model can take a while.`;
+        // Ephemeral pulse: refresh ONE live line, don't append a transcript entry
+        // per tick. Fall back to onNotice only when onHeartbeat isn't implemented.
+        if (callbacks.onHeartbeat) callbacks.onHeartbeat(msg, { phase: this.phase, elapsedSec: s });
+        else callbacks.onNotice?.(msg);
       }, heartbeatSec * 1000);
     }
     if (timeoutSec > 0) {
@@ -95,6 +127,35 @@ function stripThink(s: string): string {
   return s.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/<think>[\s\S]*$/, "").trim();
 }
 
+// Normalize a turn's usage object for onUsage. Ollama supplies tok_per_sec from
+// its own timing; OpenAI/vLLM only return token counts, so derive tok/s from how
+// long generation took (genStartMs = when the first token arrived).
+function toUsage(u: any, genStartMs: number): { inputTokens: number; outputTokens: number; tokPerSec: number } {
+  const out = u.completion_tokens ?? 0;
+  let tps = typeof u.tok_per_sec === "number"
+    ? u.tok_per_sec
+    : out > 0 && genStartMs > 0 ? out / ((Date.now() - genStartMs) / 1000) : 0;
+  if (!Number.isFinite(tps) || tps < 0 || tps > 100000) tps = 0;
+  return { inputTokens: u.prompt_tokens ?? 0, outputTokens: out, tokPerSec: tps };
+}
+
+// The output-token budget for a request. OpenAI servers (vLLM especially) reject
+// the call when prompt_tokens + max_tokens exceeds the model context
+// (max_model_len), so cap max_tokens to the room left in the context window
+// instead of always sending cfg.maxTokens. The prompt estimate is padded since
+// our char/4 estimate runs low on code. Ollama tolerates an oversized num_predict
+// but clamping is harmless there too (you can't generate past the context).
+// Rough token cost of the native tool schemas — they are part of the prompt for
+// a native tool-calling turn, so they must be reserved against the context too.
+const TOOLS_TOKEN_EST = Math.ceil(JSON.stringify(TOOL_DEFINITIONS).length / 4);
+
+function outputBudget(messages: ChatCompletionMessageParam[], extraTokens = 0): number {
+  const cfg = getConfig();
+  const promptEst = Math.ceil((estimateTokens(messages) + extraTokens) * 1.15);
+  const room = cfg.contextWindow - promptEst - 512;
+  return Math.max(256, Math.min(cfg.maxTokens, room));
+}
+
 let _isOllamaCache: boolean | null = null;
 async function checkOllama(baseUrl: string): Promise<boolean> {
   if (_isOllamaCache !== null) return _isOllamaCache;
@@ -105,6 +166,88 @@ async function checkOllama(baseUrl: string): Promise<boolean> {
     return false;
   }
   return _isOllamaCache;
+}
+
+// Cache the detected backend (ollama / vllm / openai) for the active baseUrl.
+// Cleared by resetClient() when baseUrl, apiKey, or provider changes.
+let _providerCache: Provider | null = null;
+async function checkProvider(): Promise<Provider> {
+  if (_providerCache) return _providerCache;
+  const cfg = getConfig();
+  try {
+    _providerCache = await detectProvider(cfg.baseUrl, cfg.provider);
+  } catch {
+    return cfg.provider !== "auto" ? cfg.provider : "openai"; // don't cache a guess
+  }
+  return _providerCache;
+}
+
+async function* streamOllamaRequest(urlStr: string, bodyJson: any, signal?: AbortSignal): AsyncGenerator<string> {
+  const url = new URL(urlStr);
+  const isHttps = url.protocol === "https:";
+  const lib = isHttps ? https : http;
+  
+  const postData = JSON.stringify(bodyJson);
+  
+  const agent = new lib.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 5000, // Send TCP keep-alive probes every 5 seconds
+  });
+
+  const options = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(postData),
+    },
+    agent,
+  };
+
+  const responsePromise = new Promise<http.IncomingMessage>((resolve, reject) => {
+    const req = lib.request(urlStr, options, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        let errData = "";
+        res.on("data", (chunk) => { errData += chunk.toString(); });
+        res.on("end", () => {
+          reject(new Error(`Ollama native API returned ${res.statusCode}: ${errData}`));
+        });
+      } else {
+        resolve(res);
+      }
+    });
+
+    req.on("error", (err) => {
+      reject(err);
+    });
+
+    if (signal) {
+      if (signal.aborted) {
+        req.destroy();
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      } else {
+        const onAbort = () => {
+          req.destroy();
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        req.on("close", () => {
+          signal.removeEventListener("abort", onAbort);
+        });
+      }
+    }
+
+    req.write(postData);
+    req.end();
+  });
+
+  const res = await responsePromise;
+  
+  for await (const chunk of res) {
+    if (signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    yield chunk.toString();
+  }
 }
 
 async function* ollamaStream(params: any, signal?: AbortSignal): AsyncGenerator<ChatCompletionChunk> {
@@ -179,36 +322,24 @@ async function* ollamaStream(params: any, signal?: AbortSignal): AsyncGenerator<
   if (typeof cfg.numGpu === "number") ollamaParams.options.num_gpu = cfg.numGpu;
   if (typeof cfg.numThread === "number") ollamaParams.options.num_thread = cfg.numThread;
 
-  const res = await fetch(`${host}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(ollamaParams),
-    signal,
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Ollama native API returned ${res.status}: ${text}`);
-  }
-
-  const reader = res.body?.getReader();
-  if (!reader) throw new Error("Response body is not readable.");
-
-  const decoder = new TextDecoder();
   let buffer = "";
   let inThinking = false; // wrap streamed reasoning in <think>…</think>
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+  const urlStr = `${host}/api/chat`;
+  const responseStream = streamOllamaRequest(urlStr, ollamaParams, signal);
+
+  for await (const chunk of responseStream) {
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
 
       for (const line of lines) {
         if (!line.trim()) continue;
         const json = JSON.parse(line);
+        // Ollama can stream a 200 and then emit an error line mid-stream (e.g.
+        // the harmony tool-call parser failing on gpt-oss). Surface it instead
+        // of silently yielding empty chunks, so chat() can retry / fall back.
+        if (json.error) throw new Error(`Ollama native API error: ${json.error}`);
         // Merge Ollama's separate `thinking` field into the content stream as
         // <think>…</think> so the existing reasoning UI dims it and it counts
         // toward live progress.
@@ -259,9 +390,6 @@ async function* ollamaStream(params: any, signal?: AbortSignal): AsyncGenerator<
         }
         yield chunk;
       }
-    }
-  } finally {
-    reader.releaseLock();
   }
 }
 
@@ -269,14 +397,15 @@ async function* ollamaStream(params: any, signal?: AbortSignal): AsyncGenerator<
 // (e.g. the first request that triggers a slow cold model load).
 async function createStream(params: any, signal?: AbortSignal): Promise<AsyncIterable<ChatCompletionChunk>> {
   const cfg = getConfig();
-  const isOll = await checkOllama(cfg.baseUrl);
+  const provider = await checkProvider();
 
   const open = async (): Promise<AsyncIterable<ChatCompletionChunk>> => {
-    if (isOll) {
+    if (provider === "ollama") {
       return ollamaStream(params, signal);
     } else {
-      // Messages may carry Ollama-style `images` (base64) — convert them to the
-      // OpenAI content-parts format for non-Ollama endpoints.
+      // Every non-Ollama backend (vLLM, LM Studio, llama.cpp, commercial OpenAI)
+      // speaks the OpenAI /v1 API. Messages may carry Ollama-style `images`
+      // (base64) — convert them to the OpenAI content-parts format.
       const messages = params.messages.map((m: any) =>
         m.role === "user" && Array.isArray(m.images) && m.images.length
           ? {
@@ -288,8 +417,13 @@ async function createStream(params: any, signal?: AbortSignal): Promise<AsyncIte
             }
           : m
       );
+      // Ask vLLM (and the commercial OpenAI API) to include token usage in the
+      // stream so the UI shows real counts. Skip it for unknown LOCAL servers
+      // (llama.cpp / LM Studio) that may reject the extra field with a 400.
+      const extra: any = {};
+      if (provider === "vllm" || !isLocalUrl(cfg.baseUrl)) extra.stream_options = { include_usage: true };
       const client = getClient();
-      return client.chat.completions.create({ ...params, messages }, { signal }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>;
+      return client.chat.completions.create({ ...params, ...extra, messages }, { signal }) as unknown as Promise<AsyncIterable<ChatCompletionChunk>>;
     }
   };
 
@@ -314,7 +448,7 @@ async function createStream(params: any, signal?: AbortSignal): Promise<AsyncIte
 export async function warmUp(): Promise<void> {
   try {
     const cfg = getConfig();
-    if (await checkOllama(cfg.baseUrl)) {
+    if (await checkProvider() === "ollama") {
       const host = cfg.baseUrl.replace(/\/v1\/?$/, "").replace(/\/+$/, "");
       const body: any = {
         model: cfg.model,
@@ -346,10 +480,17 @@ export async function warmUp(): Promise<void> {
 export interface StreamCallbacks {
   onText: (chunk: string) => void;
   onToolCall: (name: string, args: string) => void;
+  onToolCallProgress?: (name: string, args: string) => void;
   onToolResult: (name: string, result: string) => void;
   onError: (err: Error) => void;
   // One-off informational notices (e.g. falling back to prompted tool-calling).
   onNotice?: (msg: string) => void;
+  // Periodic "still working" pulse while waiting for the model's first token.
+  // Unlike onNotice, this is EPHEMERAL — the UI should refresh a single live
+  // line with it, never append a new transcript entry per tick (a long prefill
+  // on a big context would otherwise stack up dozens of identical paragraphs).
+  // Falls back to onNotice when a consumer doesn't implement it.
+  onHeartbeat?: (msg: string, info: { phase: "loading" | "prefill"; elapsedSec: number }) => void;
   // Real token usage for a turn (from Ollama's response): input/output + speed.
   onUsage?: (u: { inputTokens: number; outputTokens: number; tokPerSec: number }) => void;
   // Live progress while streaming: estimated output tokens generated so far
@@ -366,28 +507,63 @@ export interface StreamCallbacks {
   requestPermission?: (name: string, args: any) => Promise<boolean | { args: any }>;
   // Ask the user to pick from options (the ask_user tool). Returns their answer.
   requestChoice?: (question: string, options: string[]) => Promise<string>;
+  // Present a finished plan for approval (the propose_plan tool). "approve"
+  // turns plan mode OFF for the rest of this chat() run so the model can
+  // implement immediately; "keep" continues planning; "reject" stops the plan.
+  requestPlanApproval?: (plan: string) => Promise<"approve" | "keep" | "reject">;
+  // A repeated tool call was detected. Advisory: the turn keeps running unless
+  // willStop is true — the UI should surface it with a manual Stop, since this
+  // fires on legitimate work often enough that auto-killing the turn is wrong.
+  onLoopWarning?: (info: { tool: string; trips: number; willStop: boolean }) => void;
 }
 
 export interface ChatOptions {
   signal?: AbortSignal;
   planMode?: boolean;   // block mutating tools (research only)
+  chatMode?: boolean;   // block mutating tools (conversation only — answer in text)
   autoAccept?: boolean; // skip permission prompts
 }
 
 // Tools that change disk / run arbitrary code.
-const MUTATING_TOOLS = new Set(["write_file", "edit_file", "delete_file", "bash", "run_server", "stop_server", "update_profile", "kill_port", "browser_open", "browser_click", "browser_type", "screenshot", "page_click", "page_type", "page_open", "page_navigate", "spawn_agents"]);
+const MUTATING_TOOLS = new Set(["write_file", "edit_file", "delete_file", "bash", "run_server", "stop_server", "update_profile", "kill_port", "browser_open", "browser_click", "browser_type", "screenshot", "page_click", "page_type", "page_open", "page_navigate", "spawn_agents", "generate_image"]);
 // Read-only tools — safe to run in parallel (e.g. reading many files at once).
-const READONLY_TOOLS = new Set(["read_file", "glob_files", "grep_files", "list_dir", "server_logs", "list_servers", "read_profile", "list_ports", "system_info", "recall", "task_list", "browser_console", "browser_network", "browser_performance"]);
-const MAX_ITERATIONS = 50;
+// set_todos only touches the in-memory checklist, so it needs no permission.
+const READONLY_TOOLS = new Set(["read_file", "glob_files", "grep_files", "list_dir", "server_logs", "list_servers", "read_profile", "list_ports", "system_info", "recall", "task_list", "set_todos", "browser_console", "browser_network", "browser_performance"]);
 
 // Cache tool-support detection and 400-fallbacks per baseUrl::model.
 const toolSupportCache = new Map<string, boolean>();
 const forcedPrompted = new Set<string>();
 const noticed = new Set<string>();
+// Count Ollama tool-parse failures per baseUrl::model so we retry once before
+// permanently falling back to prompted tool-calling (see isOllamaToolParseError).
+const toolParseFailures = new Map<string, number>();
 
 function key(): string {
   const cfg = getConfig();
   return `${cfg.baseUrl}::${cfg.model}`;
+}
+
+function isLocalUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    if (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "0.0.0.0" ||
+      hostname.endsWith(".local")
+    ) {
+      return true;
+    }
+    if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) return true;
+    if (hostname.startsWith("172.")) {
+      const parts = hostname.split(".");
+      const second = Number(parts[1]);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
+  } catch {
+    return true; // fallback
+  }
 }
 
 async function resolveUseNative(callbacks: StreamCallbacks): Promise<boolean> {
@@ -402,7 +578,21 @@ async function resolveUseNative(callbacks: StreamCallbacks): Promise<boolean> {
     return v;
   }
   const supported = await detectToolSupport(cfg.baseUrl, cfg.model);
-  const useNative = supported !== false; // null (unknown) → assume native
+  let useNative: boolean;
+  if (supported !== null) {
+    useNative = supported;
+  } else {
+    // Native-tool support couldn't be probed (non-Ollama backend). Decide by
+    // provider:
+    //  - Ollama (old build, no capabilities array) and vLLM both speak native
+    //    tool-calling; default native. If a vLLM server was launched WITHOUT a
+    //    tool-call parser, the mid-flight "fallback" path switches to prompted.
+    //  - A commercial OpenAI-compatible API (non-local) → native.
+    //  - An unknown LOCAL OpenAI server (LM Studio / llama.cpp / KoboldCPP) often
+    //    mishandles tool messages → default to prompted, which is safe anywhere.
+    const provider = await checkProvider();
+    useNative = provider === "ollama" || provider === "vllm" || !isLocalUrl(cfg.baseUrl);
+  }
   toolSupportCache.set(k, useNative);
   if (!useNative) notifyPrompted(callbacks);
   return useNative;
@@ -422,27 +612,28 @@ function notifyPrompted(callbacks: StreamCallbacks) {
 // is the silent killer of tokens/sec on small GPUs.
 const vramNoticed = new Set<string>();
 
-async function reportTurnStart(callbacks: StreamCallbacks): Promise<void> {
-  if (!callbacks.onStatus) return;
+async function reportTurnStart(callbacks: StreamCallbacks): Promise<"loading" | "prefill"> {
   const cfg = getConfig();
+  let phase: "loading" | "prefill" = "prefill";
   try {
     if (await checkOllama(cfg.baseUrl)) {
       const loaded = await loadedModels(cfg.baseUrl);
       const base = cfg.model.split(":")[0]!;
       const m = loaded.find(x => x.name === cfg.model) ?? loaded.find(x => x.name.startsWith(base));
-      if (!m) { callbacks.onStatus("loading"); return; }
+      if (!m) { phase = "loading"; callbacks.onStatus?.("loading"); return phase; }
       if (m.size && m.sizeVram !== undefined && m.sizeVram < m.size && !vramNoticed.has(cfg.model)) {
         vramNoticed.add(cfg.model);
         const pct = Math.round((m.sizeVram / m.size) * 100);
         const gb = (n: number) => (n / 1e9).toFixed(1);
         callbacks.onNotice?.(
           `"${cfg.model}" doesn't fully fit in VRAM — only ${pct}% is on the GPU (${gb(m.sizeVram)} of ${gb(m.size)} GB); the rest runs from system RAM, which slows generation a lot. ` +
-          `To fit it: lower the context window (it's the KV cache that grows with num_ctx), use a smaller quant (e.g. q4_K_M), or switch to a smaller model.`
+          `The KV cache grows with num_ctx, so to fit a LARGE context, quantize it: start Ollama with OLLAMA_FLASH_ATTENTION=1 and OLLAMA_KV_CACHE_TYPE=q8_0 (q4_0 for even more), or use vLLM. Otherwise use a smaller weight quant (e.g. q4_K_M), lower the context window (/config contextWindow <n>), or a smaller model.`
         );
       }
     }
   } catch { /* status is best-effort */ }
-  callbacks.onStatus("prefill");
+  callbacks.onStatus?.("prefill");
+  return phase;
 }
 
 // Shared policy gate: plan-mode block, permission, execution. Returns result.
@@ -471,8 +662,44 @@ async function runTool(
     return r;
   }
 
+  // propose_plan is the plan-mode exit: the plan goes to an interactive
+  // approve / keep-planning prompt. Approval flips planMode OFF for the rest of
+  // this run so the model can implement immediately, Claude Code-style.
+  if (name === "propose_plan") {
+    const plan = String(args?.plan ?? "").trim();
+    let r: string;
+    if (!plan) {
+      r = "Error: propose_plan needs the COMPLETE plan in 'plan' (markdown: numbered steps, files to change, verification). Call it again with the full plan.";
+    } else if (callbacks.requestPlanApproval) {
+      let decision: "approve" | "keep" | "reject" = "keep";
+      try { decision = await callbacks.requestPlanApproval(plan); } catch { /* treat as keep */ }
+      if (decision === "approve") {
+        const wasPlanning = options.planMode === true;
+        options.planMode = false;
+        r = wasPlanning
+          ? "The user APPROVED the plan. Plan mode is now OFF — write/edit/bash tools are unblocked. Implement the plan NOW, step by step, in this same run. Use set_todos to track the steps as you go."
+          : "The user APPROVED the plan. Implement it NOW, step by step, in this same run. Use set_todos to track the steps as you go.";
+      } else if (decision === "reject") {
+        r = "The user REJECTED the plan. Do not implement it. Stop here and wait for further instructions from the user.";
+      } else {
+        r = "The user wants to KEEP PLANNING — the plan is not approved yet. Refine it based on the conversation so far (or ask ONE focused question about what to change), then propose it again. Do not modify any files.";
+      }
+    } else {
+      r = "Plan noted. There is no interactive approval available in this context — present the plan as your final answer and wait for the user's reply.";
+    }
+    callbacks.onToolResult(name, r);
+    return r;
+  }
+
   if (options.planMode && MUTATING_TOOLS.has(name)) {
     const r = `[plan mode] ${name} is blocked. You are planning, not executing — present your plan and wait for approval.`;
+    callbacks.onToolResult(name, r);
+    return r;
+  }
+  // Chat mode is enforced here, not just in the prompt: models reliably ignore a
+  // "don't build" instruction the moment a request sounds like work.
+  if (options.chatMode && MUTATING_TOOLS.has(name)) {
+    const r = `[chat mode] ${name} is blocked — the user asked to talk, not to have files built. Write the answer directly in your reply instead (a list means a list in the message; show code as a fenced block, don't create the file). If this genuinely requires changing files, say so in one line and ask the user to switch to normal or auto mode. Do not call this tool again.`;
     callbacks.onToolResult(name, r);
     return r;
   }
@@ -492,7 +719,9 @@ async function runTool(
   }
   let result: string;
   try {
-    result = await executeTool(name, args);
+    // onNotice lets a slow tool narrate while it works — image generation uses
+    // it to report VRAM swapping, which otherwise looks like a 60-second hang.
+    result = await executeTool(name, args, callbacks.onNotice);
   } catch (e: any) {
     result = `Error: ${e.message}`;
   }
@@ -530,6 +759,9 @@ async function executeCalls(
     } else {
       result = await runTool(c.name, c.args, callbacks, options);
     }
+    // Feed build/test outcomes to the orchestrator's failure tracker so the
+    // two-strike Chrome override can arm/disarm across turns.
+    noteToolOutcome(c.name, c.args, result);
     out.push({ id: c.id, name: c.name, result });
   }
   return out;
@@ -569,12 +801,22 @@ function lastAssistantText(history: ChatCompletionMessageParam[]): { text: strin
   return null;
 }
 
+// Repeat detection is ADVISORY by default. A false positive that kills a turn
+// mid-way through real work (writing a long file, re-running a test whose output
+// hasn't changed yet) is far more damaging than a genuine loop running a few
+// extra iterations — maxIterations is the real backstop, and the user has a Stop
+// button. So: nudge the model first, and only abort if the user opted into
+// loopAction:"stop" and it keeps happening.
+type LoopVerdict = "ok" | "warn" | "stop";
+
 function checkToolLoop(
   norm: NormCall[],
   results: { name: string; result: string }[],
-  toolLoopGuard?: ToolLoopGuard
-): boolean {
-  if (!toolLoopGuard) return false;
+  toolLoopGuard: ToolLoopGuard | undefined,
+  callbacks: StreamCallbacks,
+  history: ChatCompletionMessageParam[]
+): LoopVerdict {
+  if (!toolLoopGuard) return "ok";
   let detected = false;
   for (let i = 0; i < norm.length; i++) {
     const call = norm[i];
@@ -582,7 +824,29 @@ function checkToolLoop(
       detected = true;
     }
   }
-  return detected;
+  if (!detected) return "ok";
+
+  const tool = toolLoopGuard.lastSignature;
+  const trips = toolLoopGuard.trips;
+  const hardStop = getConfig().loopAction === "stop" && trips >= 2;
+
+  // Tell the model what we saw so it can correct itself — this is what actually
+  // breaks a real loop, and it costs a genuine worker nothing.
+  history.push({
+    role: "user",
+    content: `<system_note>You have now called ${tool} several times in a row with identical arguments AND received an identical result each time. Repeating it will not produce anything new. Either take a different approach (different arguments, a different tool, or read the previous result more carefully), or stop and give your final answer. Do not repeat that exact call again.</system_note>`,
+  });
+
+  // Surfaced separately from onNotice so the UI can show a dismissible warning
+  // with a Stop button instead of a passive log line.
+  callbacks.onLoopWarning?.({ tool, trips, willStop: hardStop });
+
+  if (hardStop) {
+    callbacks.onNotice?.(`Stopped: ${tool} repeated with identical results ${trips} times. (This is the strict setting — set loopAction to "warn" in /config if it's stopping legitimate work.)`);
+    return "stop";
+  }
+  callbacks.onNotice?.(`Heads up: ${tool} has repeated with identical results. I've told the model to change approach — it's still running. Press Stop if it's genuinely stuck.`);
+  return "warn";
 }
 
 export async function chat(
@@ -591,7 +855,19 @@ export async function chat(
   options: ChatOptions = {}
 ): Promise<ChatCompletionMessageParam[]> {
   const history = [...messages];
+
+  // Update orchestrator state from the newest GENUINE user message (the caller
+  // pushes the user's input as the last message before invoking chat(); internal
+  // nudges/tool-responses are only appended to `history` later, inside the loop).
+  // `error_streak` / `is_from_scratch` drive the <RUNTIME_OVERRIDE> injection.
+  const lastMsg = messages[messages.length - 1];
+  if (lastMsg?.role === "user" && typeof lastMsg.content === "string") {
+    const isFirstUserTurn = messages.filter(m => m.role === "user").length === 1;
+    noteUserTurn(lastMsg.content, isFirstUserTurn);
+  }
+
   let useNative = await resolveUseNative(callbacks);
+  const maxIterations = getConfig().maxIterations || 50;
   let iteration = 0;
   let stallNudges = 0;
   let emptyRetries = 0;
@@ -604,6 +880,9 @@ export async function chat(
     // a passive-chatbot refusal ("as an AI I can't start a server"), or lecture
     // mode (telling the USER how to fix it / printing snippets to copy). Each
     // gets a correction matched to its failure.
+    // Green-field manifest gate: ending the turn with a manifest and no tool call
+    // is the REQUIRED behaviour, so don't nudge it as if it were a stall.
+    if (isAwaitingScaffold()) return "break";
     if (last && !last.hadToolCalls && last.text.trim().length > 20) {
       const refusing = REFUSAL_RE.test(last.text);
       const advising = !refusing && ADVICE_RE.test(last.text);
@@ -651,11 +930,11 @@ export async function chat(
     // Give up only after retry + nudge both failed. This is a protocol hiccup on
     // this turn, NOT a limit of the model or hardware — so we don't tell the user
     // to shrink anything; just resend.
-    callbacks.onNotice?.("The model returned an empty response several times in a row even after retrying and nudging. This is usually a one-off hiccup on this turn — resend your message. If it keeps happening with this model, turning reasoning off can help (/config thinking false).");
+    callbacks.onNotice?.("The model returned an empty response several times in a row even after retrying and nudging. This is usually a one-off hiccup on this turn — resend your message. If it keeps happening with this model, turning reasoning off can help (/think off).");
     return "break";
   };
 
-  while (iteration++ < MAX_ITERATIONS) {
+  while (iteration++ < maxIterations) {
     if (options.signal?.aborted) break;
 
     // Console/error streaming: surface error lines that background servers
@@ -688,6 +967,9 @@ export async function chat(
       if (outcome === "loop_detected") {
         break;
       }
+      // Re-run the same turn without consuming an iteration (used for the
+      // one-shot retry after an Ollama tool-parse hiccup).
+      if (outcome === "retry") { iteration--; continue; }
       if (outcome === "empty") { if (await handleEmpty() === "break") break; else continue; }
       if (outcome === "done") { if (handleDone() === "break") break; else continue; }
       // otherwise "continue" (tools ran) → loop
@@ -702,11 +984,15 @@ export async function chat(
     }
   }
 
+  if (iteration > maxIterations) {
+    callbacks.onNotice?.(`Reached the safety limit of ${maxIterations} iterations. If the task is not finished, you can type "continue" or "keep going" to proceed.`);
+  }
+
   return history;
 }
 
 // ─── Native tool-calling turn ─────────────────────────────────────────────────
-type NativeOutcome = "done" | "continue" | "fallback" | "loop_detected" | "empty";
+type NativeOutcome = "done" | "continue" | "fallback" | "loop_detected" | "empty" | "retry";
 
 async function nativeTurn(
   history: ChatCompletionMessageParam[],
@@ -727,19 +1013,25 @@ async function nativeTurn(
   const guardOn = cfg.loopGuard === true;
   let looped = false;
   let firstToken = true;
+  let genStart = 0;
 
   const wdAc = linkAbort(options.signal);
   const wd = new StreamWatchdog(callbacks, () => wdAc.abort(), cfg.stallHeartbeatSec, cfg.stallTimeoutSec, "the model's response");
 
   try {
-    await reportTurnStart(callbacks);
+    wd.setPhase(await reportTurnStart(callbacks));
+    // Dynamic per-turn system-prompt override (two-strike Chrome force /
+    // green-field manifest gate). Empty string when no rule applies — a no-op.
+    // Appended request-only; the stored `history` keeps its clean system prompt.
+    const override = buildRuntimeOverride();
+    const reqMessages = override ? augmentSystem(history, override) : history;
     const stream = await createStream(
       {
         model: cfg.model,
-        messages: history,
+        messages: reqMessages,
         tools: TOOL_DEFINITIONS,
         tool_choice: "auto",
-        max_tokens: cfg.maxTokens,
+        max_tokens: outputBudget(history, TOOLS_TOKEN_EST),
         temperature: cfg.temperature,
         stream: true,
       },
@@ -749,10 +1041,10 @@ async function nativeTurn(
     for await (const chunk of stream) {
       if (wdAc.signal.aborted) break;
       const u = (chunk as any).usage;
-      if (u) callbacks.onUsage?.({ inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens, tokPerSec: u.tok_per_sec });
+      if (u) callbacks.onUsage?.(toUsage(u, genStart));
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
-      if (firstToken && (delta.content || delta.tool_calls)) { firstToken = false; wd.disarm(); callbacks.onStatus?.("generating"); }
+      if (firstToken && (delta.content || delta.tool_calls)) { firstToken = false; genStart = Date.now(); wd.disarm(); callbacks.onStatus?.("generating"); }
       if (delta.content) {
         const clean = harmony.push(delta.content);
         if (clean) {
@@ -794,6 +1086,9 @@ async function nativeTurn(
             entry.args += tc.function.arguments;
             genChars += tc.function.arguments.length;
           }
+          if (entry.name) {
+            callbacks.onToolCallProgress?.(entry.name, entry.args);
+          }
         }
       }
       callbacks.onProgress?.(Math.round(genChars / 4));
@@ -808,10 +1103,28 @@ async function nativeTurn(
     wd.stop();
     const msg = String(err?.message ?? err);
     if (/does not support tools/i.test(msg) || /tools.*not supported/i.test(msg)) return "fallback";
+    // The backend's server-side tool-call parser choked on malformed/truncated
+    // JSON from the model (not missing tool support). Retry once — it's often a
+    // sampling fluke — then fall back to prompted tool-calling, which avoids the
+    // parser entirely and passes bodies raw.
+    if (isOllamaToolParseError(msg)) {
+      const k = key();
+      const n = (toolParseFailures.get(k) ?? 0) + 1;
+      toolParseFailures.set(k, n);
+      if (n <= 1) {
+        callbacks.onNotice?.("The backend returned an invalid/truncated tool call (the model's tool-call JSON was malformed). Retrying…");
+        return "retry";
+      }
+      callbacks.onNotice?.("The native tool-call parser keeps rejecting this model's tool calls (truncated argument JSON) — switching to prompted tool-calling, which passes bodies raw and avoids the parser.");
+      return "fallback";
+    }
     // The watchdog aborted a stalled turn (no token within the cap) — retryable,
-    // not a user stop. chat()'s handleEmpty warms the model and retries.
+    // not a user stop. chat()'s handleEmpty retries (and nudges if it persists).
     if (wd.firedAbort && !options.signal?.aborted) return "empty";
-    if (err?.name === "AbortError") return "done";
+    if (err?.name === "AbortError") {
+      if (options.signal?.aborted) return "done";
+      return "empty";
+    }
     callbacks.onError(err);
     return "done";
   }
@@ -843,8 +1156,38 @@ async function nativeTurn(
     //     never answered. Record the (empty) turn so callers don't misread it as
     //     a dropped response, and point at the real fix.
     history.push({ role: "assistant", content: "" });
-    callbacks.onNotice?.("The model reasoned for the entire turn but never produced an answer — it most likely ran out of output tokens mid-thought. Raise the limit (/config maxTokens <n>) or switch to a non-reasoning model.");
+    callbacks.onNotice?.("The model reasoned for the entire turn but never produced an answer — it most likely ran out of output tokens mid-thought. Raise the limit (/config maxTokens <n>), or turn reasoning off (/think off).");
     return "done";
+  }
+
+  // gpt-oss/harmony sometimes leaks a tool call's ARGUMENTS as bare JSON in the
+  // content channel (the function name lived in the dropped channel header), so
+  // the call dead-ends as a JSON "final answer". Recover it as a real tool call,
+  // stored as a proper native call (not raw JSON content) so history stays clean
+  // and the work actually happens. parseLeakedToolCall only fires on an
+  // unambiguous, name-less arg object (see its doc), so this is safe.
+  if (toolCalls.length === 0) {
+    const leaked = parseLeakedToolCall(storedText);
+    if (leaked.length > 0) {
+      const norm: NormCall[] = leaked.map((c, i) => ({
+        id: `call_${Date.now()}_${i}`,
+        name: canonicalToolName(c.name),
+        args: c.arguments,
+        rawArgs: JSON.stringify(c.arguments),
+      }));
+      history.push({
+        role: "assistant",
+        content: null,
+        tool_calls: norm.map(c => ({ id: c.id!, type: "function" as const, function: { name: c.name, arguments: c.rawArgs } })),
+      });
+      callbacks.onNotice?.(`Recovered a ${norm.map(c => c.name).join(", ")} call the model emitted as plain JSON (a gpt-oss/harmony quirk) and ran it.`);
+      const results = await executeCalls(norm, callbacks, options);
+      for (const r of results) history.push({ role: "tool", tool_call_id: r.id!, content: r.result });
+      if (checkToolLoop(norm, results, toolLoopGuard, callbacks, history) === "stop") {
+        return "loop_detected";
+      }
+      return "continue";
+    }
   }
 
   history.push({
@@ -869,8 +1212,7 @@ async function nativeTurn(
         role: "user",
         content: `${responses.join("\n")}\n\nContinue: issue the next tool call, or give your final response. Prefer the native tool-call interface over writing tool calls as text.`,
       });
-      if (checkToolLoop(norm, results, toolLoopGuard)) {
-        callbacks.onNotice?.("Stopped: the model was stuck in an infinite tool-calling loop (e.g. executing the same actions with the same results repeatedly). Switch to a stronger model, or change your prompt.");
+      if (checkToolLoop(norm, results, toolLoopGuard, callbacks, history) === "stop") {
         return "loop_detected";
       }
       return "continue";
@@ -885,8 +1227,7 @@ async function nativeTurn(
   });
   const results = await executeCalls(norm, callbacks, options);
   for (const r of results) history.push({ role: "tool", tool_call_id: r.id!, content: r.result });
-  if (checkToolLoop(norm, results, toolLoopGuard)) {
-    callbacks.onNotice?.("Stopped: the model was stuck in an infinite tool-calling loop (e.g. executing the same actions with the same results repeatedly). Switch to a stronger model, or change your prompt.");
+  if (checkToolLoop(norm, results, toolLoopGuard, callbacks, history) === "stop") {
     return "loop_detected";
   }
   return "continue";
@@ -904,8 +1245,10 @@ async function promptedTurn(
   const cfg = getConfig();
 
   // Build request messages: augment the system message with tool instructions
-  // (request-only — the stored history keeps the clean system prompt).
-  const request = augmentSystem(history, promptedToolInstructions());
+  // plus any dynamic <RUNTIME_OVERRIDE> for this turn (two-strike Chrome force /
+  // green-field manifest gate). Request-only — the stored history keeps the clean
+  // system prompt.
+  const request = augmentSystem(history, promptedToolInstructions() + buildRuntimeOverride());
 
   let raw = "";
   const prose = new ProseFilter();
@@ -913,17 +1256,18 @@ async function promptedTurn(
   const guardOn = cfg.loopGuard === true;
   let looped = false;
   let firstToken = true;
+  let genStart = 0;
 
   const wdAc = linkAbort(options.signal);
   const wd = new StreamWatchdog(callbacks, () => wdAc.abort(), cfg.stallHeartbeatSec, cfg.stallTimeoutSec, "the model's response");
 
   try {
-    await reportTurnStart(callbacks);
+    wd.setPhase(await reportTurnStart(callbacks));
     const stream = await createStream(
       {
         model: cfg.model,
         messages: request,
-        max_tokens: cfg.maxTokens,
+        max_tokens: outputBudget(request),
         temperature: cfg.temperature,
         stream: true,
       },
@@ -933,11 +1277,11 @@ async function promptedTurn(
     for await (const chunk of stream) {
       if (wdAc.signal.aborted) break;
       const u = (chunk as any).usage;
-      if (u) callbacks.onUsage?.({ inputTokens: u.prompt_tokens, outputTokens: u.completion_tokens, tokPerSec: u.tok_per_sec });
+      if (u) callbacks.onUsage?.(toUsage(u, genStart));
       const delta = chunk.choices[0]?.delta;
       const text = delta?.content;
       if (!text) continue;
-      if (firstToken) { firstToken = false; wd.disarm(); callbacks.onStatus?.("generating"); }
+      if (firstToken) { firstToken = false; genStart = Date.now(); wd.disarm(); callbacks.onStatus?.("generating"); }
       raw += text;
       callbacks.onProgress?.(Math.round(raw.length / 4));
       // Show prose but hide raw tool-call markup; <think> is handled upstream.
@@ -951,7 +1295,10 @@ async function promptedTurn(
     wd.stop();
     // Watchdog aborted a stalled turn (no token within the cap) → retryable.
     if (wd.firedAbort && !options.signal?.aborted) return "empty";
-    if (err?.name === "AbortError") return "done";
+    if (err?.name === "AbortError") {
+      if (options.signal?.aborted) return "done";
+      return "empty";
+    }
     callbacks.onError(err);
     return "done";
   }
@@ -974,7 +1321,7 @@ async function promptedTurn(
   // turn and explain the real cause rather than blaming context size.
   if (!cleanRaw) {
     history.push({ role: "assistant", content: "" });
-    callbacks.onNotice?.("The model reasoned for the entire turn but never produced an answer — it most likely ran out of output tokens mid-thought. Raise the limit (/config maxTokens <n>) or switch to a non-reasoning model.");
+    callbacks.onNotice?.("The model reasoned for the entire turn but never produced an answer — it most likely ran out of output tokens mid-thought. Raise the limit (/config maxTokens <n>), or turn reasoning off (/think off).");
     return "done";
   }
 
@@ -990,8 +1337,7 @@ async function promptedTurn(
     role: "user",
     content: `${responses.join("\n")}\n\nPlease analyze the tool output. Output the next tool call, or if you are done, provide a final response summarizing the changes or results for the user.`,
   });
-  if (checkToolLoop(norm, results, toolLoopGuard)) {
-    callbacks.onNotice?.("Stopped: the model was stuck in an infinite tool-calling loop (e.g. executing the same actions with the same results repeatedly). Switch to a stronger model, or change your prompt.");
+  if (checkToolLoop(norm, results, toolLoopGuard, callbacks, history) === "stop") {
     return "loop_detected";
   }
   return "continue";

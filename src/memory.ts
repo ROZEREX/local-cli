@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import { getConfig } from "./config";
+import { isIncognito } from "./incognito";
 
 // Per-project agent memory: durable facts about THIS project that the agent
 // learns across sessions ("backend uses NestJS", "never touch migrations by
@@ -23,6 +24,7 @@ export function readMemory(): string {
 
 // Append one or more facts (markdown bullets). Dedupes exact lines.
 export function addMemory(content: string): { added: number; skipped: number } {
+  if (isIncognito()) return { added: 0, skipped: 0 }; // nothing learned in incognito outlives the session
   const fp = memoryFilePath();
   const existing = readMemory();
   const existingLines = new Set(existing.split("\n").map(l => l.trim()).filter(Boolean));
@@ -57,6 +59,7 @@ export function addMemory(content: string): { added: number; skipped: number } {
 
 // Remove memory lines containing the given text (case-insensitive).
 export function forgetMemory(match: string): number {
+  if (isIncognito()) return 0;
   const existing = readMemory();
   if (!existing) return 0;
   const needle = match.toLowerCase();
@@ -68,6 +71,7 @@ export function forgetMemory(match: string): number {
 }
 
 export function clearMemory(): boolean {
+  if (isIncognito()) return false;
   const fp = memoryFilePath();
   if (!existsSync(fp)) return false;
   try { unlinkSync(fp); return true; } catch { return false; }

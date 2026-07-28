@@ -463,14 +463,53 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "spawn_agents",
-      description: "Spawn 1-4 focused SUB-AGENTS that each work on one task with a fresh context and report back (e.g. 'Investigate the login bug' + 'Review error handling in src/api'). Read-only by default; set allow_writes only when a sub-agent must edit files. Use for parallelizable investigation/review work — NOT for simple single-step jobs you can do directly.",
+      description: "Spawn 1-4 focused SUB-AGENTS that each work on one task with a fresh context and report back. Prefix a task with a role to specialize it: 'explore:', 'review:', 'plan:' (read-only), 'test:' (runs builds/tests), 'code:', 'fix:' (may modify files) — e.g. 'test: run the test suite and report failures', 'review: audit src/api error handling'. Unprefixed tasks are generic read-only investigators. Use for parallelizable or delegable work — NOT for simple single-step jobs you can do directly.",
       parameters: {
         type: "object",
         properties: {
-          tasks: { type: "array", items: { type: "string" }, description: "One self-contained task per agent (1-4)" },
-          allow_writes: { type: "boolean", description: "Allow the sub-agents to modify files (default false = investigate only)" },
+          tasks: { type: "array", items: { type: "string" }, description: "One self-contained task per agent (1-4), optionally prefixed with a role like 'test: …' or 'fix: …'" },
+          allow_writes: { type: "boolean", description: "Force write access for ALL tasks (default false; test/code/fix role tasks get it automatically)" },
         },
         required: ["tasks"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_todos",
+      description: "Set/update your live TODO checklist for the current multi-step task — the user sees it as a progress checklist. Send the FULL list every time (it replaces the previous one). Use for any task with 3+ steps: create it up front, mark exactly one item in_progress while working on it, and mark items completed as soon as they're done. For work that must persist across sessions use task_add instead.",
+      parameters: {
+        type: "object",
+        properties: {
+          todos: {
+            type: "array",
+            description: "The complete, current checklist (replaces the previous list)",
+            items: {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "The step, short and concrete" },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"], description: "Current state of this step" },
+              },
+              required: ["text", "status"],
+            },
+          },
+        },
+        required: ["todos"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "propose_plan",
+      description: "PLAN MODE ONLY: present your finished implementation plan to the user for approval. The user gets an interactive approve / keep-planning prompt; if they APPROVE, plan mode turns off and you must immediately implement the plan in the same run. Call this once your research is done, with the COMPLETE plan — never with a partial draft.",
+      parameters: {
+        type: "object",
+        properties: {
+          plan: { type: "string", description: "The full plan as markdown: numbered steps, the files to create/change and how, and how you'll verify the result" },
+        },
+        required: ["plan"],
       },
     },
   },
@@ -511,6 +550,43 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
           name: { type: "string", description: "Profile to write to (defaults to the active profile, or 'default')" },
         },
         required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_via_chrome",
+      description: "LIVE INTERNET ACCESS. Search the web and read the current official documentation by driving the user's real Google Chrome over the DevTools debugging port — no external search API. Opens a throwaway tab, runs the query, follows the top 1-2 documentation/results, scrapes their readable text, closes the tab, and returns the live text. Use this to check up-to-date framework/library docs (e.g. Tailwind, React, Vite) instead of relying on possibly-stale training memory — especially after a fix has failed.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What to look up, e.g. 'tailwind v4 @theme directive' or a full https:// URL to read directly" },
+          max_pages: { type: "number", description: "How many result pages to follow and scrape (default 2, max 3)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_image",
+      description: "Generate an image from a text prompt using the LOCAL diffusion server (ComfyUI, AUTOMATIC1111/Forge/SD.Next, or SwarmUI) and save it as a PNG. Use this when the user asks for a picture, illustration, logo, icon, texture, mockup art, or placeholder image. Detected automatically — no API key, nothing leaves the machine. If no server is running the tool returns setup instructions; relay them instead of retrying.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string", description: "What to draw. Be descriptive: subject, style, lighting, composition." },
+          negative_prompt: { type: "string", description: "What to avoid (e.g. 'blurry, text, watermark, extra fingers')" },
+          width: { type: "number", description: "Pixel width, multiple of 64 (default 768)" },
+          height: { type: "number", description: "Pixel height, multiple of 64 (default 768)" },
+          steps: { type: "number", description: "Sampling steps (default 25; 4-8 is enough for a Turbo/Lightning checkpoint)" },
+          cfg_scale: { type: "number", description: "Prompt adherence (default 7; use 1-2 for Turbo checkpoints)" },
+          seed: { type: "number", description: "Seed for reproducibility; omit or -1 for random" },
+          model: { type: "string", description: "Checkpoint name to use; omit to use whatever the server has loaded" },
+          path: { type: "string", description: "Where to save, relative to the project (default generated-images/<timestamp>_<slug>.png)" },
+        },
+        required: ["prompt"],
       },
     },
   },

@@ -69,6 +69,7 @@ export function Banner({ model, baseUrl, cwd }: { model: string; baseUrl: string
         <Text color={theme.color.dim}>{"   "}</Text>
         {hint("/add", "files")}<Text color={theme.color.dim}>{"   "}</Text>
         {hint("/chats", "history")}<Text color={theme.color.dim}>{"   "}</Text>
+        {hint("/backend", "ollama⇄vllm")}<Text color={theme.color.dim}>{"   "}</Text>
         {hint("/help", "commands")}<Text color={theme.color.dim}>{"   "}</Text>
         {hint("shift+tab", "mode")}<Text color={theme.color.dim}>{"   "}</Text>
         {hint("esc", "stop")}
@@ -133,6 +134,7 @@ export interface ToolView {
   summary: string;
   result?: string;
   status: "running" | "done" | "denied";
+  args?: any;
 }
 
 export function ToolCard({ tool }: { tool: ToolView }) {
@@ -150,6 +152,23 @@ export function ToolCard({ tool }: { tool: ToolView }) {
   const preview = resultLines.slice(0, 8);
   const more = resultLines.length - preview.length;
 
+  let runningLines: string[] = [];
+  if (tool.status === "running" && tool.args) {
+    if (tool.name === "write_file" && typeof tool.args.content === "string") {
+      runningLines = tool.args.content.split("\n");
+    } else if (tool.name === "edit_file") {
+      if (typeof tool.args.new_string === "string") {
+        runningLines = tool.args.new_string.split("\n");
+      } else if (typeof tool.args.content === "string") {
+        runningLines = tool.args.content.split("\n");
+      }
+    } else if (tool.name === "update_profile" && typeof tool.args.content === "string") {
+      runningLines = tool.args.content.split("\n");
+    } else if ((tool.name === "bash" || tool.name === "run_server") && typeof tool.args.command === "string") {
+      runningLines = [tool.args.command];
+    }
+  }
+
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box>
@@ -160,6 +179,19 @@ export function ToolCard({ tool }: { tool: ToolView }) {
           <Text color={theme.color.dim}>(<Text color={theme.color.muted}>{tool.summary}</Text>)</Text>
         ) : null}
       </Box>
+      {tool.status === "running" && runningLines.length > 0 ? (
+        <Box flexDirection="column">
+          {runningLines.slice(-10).map((l, i) => {
+            const body = l.length > 140 ? l.slice(0, 140) + "…" : l;
+            return (
+              <Text key={i} color={theme.color.muted}>
+                <Text color={theme.color.dim}>│ </Text>
+                {body}
+              </Text>
+            );
+          })}
+        </Box>
+      ) : null}
       {tool.status !== "running" && preview.length > 0 ? (
         <Box flexDirection="column">
           {preview.map((l, i) => {
@@ -209,18 +241,31 @@ export function SystemMessage({ text, tone }: { text: string; tone?: "info" | "e
 // model + context meter on the right.
 export type StatusState = "idle" | "thinking" | "permission";
 
+// Chip color per backend so you always know WHO you're talking to: ollama
+// (green — the local default), vllm (peach — the fast lane), openai (blue).
+function providerColor(p: string): string {
+  return p === "ollama" ? theme.color.success
+    : p === "vllm" ? theme.color.accent
+    : p === "openai" ? theme.color.primary
+    : theme.color.dim;
+}
+
 export function StatusBar({
   model,
+  provider,
   tokens,
   contextWindow,
   status,
   mode,
+  tps,
 }: {
   model: string;
+  provider?: string;
   tokens: number;
   contextWindow: number;
   status: StatusState;
-  mode: "normal" | "plan" | "auto" | "debug";
+  mode: "normal" | "chat" | "plan" | "auto" | "debug";
+  tps?: number;
 }) {
   const pct = Math.min(100, Math.round((tokens / contextWindow) * 100));
   const pctColor = pct > 85 ? theme.color.error : pct > 65 ? theme.color.warn : theme.color.dim;
@@ -238,6 +283,7 @@ export function StatusBar({
     mode === "plan" ? <Text backgroundColor={theme.color.accent} color="black" bold> PLAN </Text> :
     mode === "auto" ? <Text backgroundColor={theme.color.warn} color="black" bold> AUTO </Text> :
     mode === "debug" ? <Text backgroundColor={theme.color.error} color="black" bold> DEBUG </Text> :
+    mode === "chat" ? <Text backgroundColor={theme.color.dim} color="black" bold> CHAT </Text> :
     null;
 
   return (
@@ -247,8 +293,15 @@ export function StatusBar({
         <Text>{badge ? " " : ""}{statusEl}</Text>
       </Box>
       <Box>
+        {provider ? (
+          <>
+            <Text color={providerColor(provider)} bold>{theme.icon.server} {provider}</Text>
+            <Text color={theme.color.dim}>  </Text>
+          </>
+        ) : null}
         <Text color={theme.color.dim}>{theme.icon.model} </Text>
         <Text color={theme.color.primary}>{model}</Text>
+        {tps && tps > 0 ? <Text color={theme.color.dim}> · {tps.toFixed(0)} t/s</Text> : null}
         <Text color={theme.color.dim}>   {theme.icon.tokens} </Text>
         <ContextBar pct={pct} color={pctColor} />
         <Text color={pctColor}> {pct}%</Text>
@@ -282,11 +335,16 @@ export function GeneratingLine({
   elapsed,
   phase,
   thinking,
+  note,
 }: {
   tokens: number;
   elapsed: number;
   phase?: LivePhase;
   thinking?: boolean;
+  // Ephemeral "still working" pulse from the stream watchdog. Rendered on its
+  // own dim line and REPLACED in place each tick — so a long prefill never
+  // floods the transcript with repeated warnings (it used to commit one per tick).
+  note?: string | null;
 }) {
   const liveTps = elapsed > 0 ? Math.round(tokens / elapsed) : 0;
   const label =
@@ -294,19 +352,26 @@ export function GeneratingLine({
     tokens === 0 && phase === "prefill" ? "reading the prompt" :
     tokens === 0 ? "waiting for the model" :
     thinking ? "thinking" : "writing";
-  const note =
+  const phaseNote =
     phase === "loading" ? "  (cold start — can take a while)" :
     tokens === 0 && phase === "prefill" ? "  (prefill)" : "";
   return (
-    <Box paddingX={1}>
-      <Text color={thinking && tokens > 0 ? theme.color.think : theme.color.accent}>
-        <Spinner type="dots" /> {label}{" "}
-      </Text>
-      {tokens > 0 ? <Text color={theme.color.success}>↓{tokens.toLocaleString()} tok</Text> : null}
-      <Text color={theme.color.dim}>{tokens > 0 ? " · " : ""}{elapsed}s</Text>
-      {liveTps && tokens > 0 ? <Text color={theme.color.dim}> · {liveTps} t/s</Text> : null}
-      {note ? <Text color={theme.color.dim}>{note}</Text> : null}
-      <Text color={theme.color.dim}>   ·  esc to stop</Text>
+    <Box flexDirection="column">
+      <Box paddingX={1}>
+        <Text color={thinking && tokens > 0 ? theme.color.think : theme.color.accent}>
+          <Spinner type="dots" /> {label}{" "}
+        </Text>
+        {tokens > 0 ? <Text color={theme.color.success}>↓{tokens.toLocaleString()} tok</Text> : null}
+        <Text color={theme.color.dim}>{tokens > 0 ? " · " : ""}{elapsed}s</Text>
+        {liveTps && tokens > 0 ? <Text color={theme.color.dim}> · {liveTps} t/s</Text> : null}
+        {phaseNote ? <Text color={theme.color.dim}>{phaseNote}</Text> : null}
+        <Text color={theme.color.dim}>   ·  esc to stop</Text>
+      </Box>
+      {note ? (
+        <Box paddingX={1}>
+          <Text color={theme.color.dim} wrap="truncate-end">{theme.icon.bullet} {note}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

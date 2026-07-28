@@ -83,6 +83,47 @@ const run = async () => {
     server.stop(true);
   }
 
+  // 2c. A slow first token pulses onHeartbeat (ephemeral, refreshed in place) —
+  // NOT onNotice (which would commit a fresh transcript paragraph per tick, the
+  // "screen floods with identical warnings" bug). Server delays the first token
+  // ~1.4s; heartbeat every 1s → at least one pulse before the token arrives.
+  {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        if (!new URL(req.url).pathname.endsWith("/chat/completions")) return new Response("nf", { status: 404 });
+        const body: any = await req.json();
+        if (!body.stream) return Response.json({ choices: [{ index: 0, message: { content: "ok" }, finish_reason: "stop" }] });
+        const stream = new ReadableStream({
+          async start(c) {
+            await new Promise(r => setTimeout(r, 1400)); // slow prefill before first token
+            c.enqueue(new TextEncoder().encode(textTurn("Done after a slow prefill.")));
+            c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+            c.close();
+          },
+        });
+        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+      },
+    });
+    saveConfig({ baseUrl: `http://localhost:${server.port}/v1`, stallHeartbeatSec: 1, stallTimeoutSec: 0 });
+    resetClient();
+    const notices: string[] = [];
+    const heartbeats: { msg: string; phase: string; elapsedSec: number }[] = [];
+    const hist = await chat(
+      [{ role: "system", content: "t" }, { role: "user", content: "hi" }],
+      {
+        onText: () => {}, onToolCall: () => {}, onToolResult: () => {}, onError: () => {},
+        onNotice: (m) => notices.push(m),
+        onHeartbeat: (msg, info) => heartbeats.push({ msg, phase: info.phase, elapsedSec: info.elapsedSec }),
+      }
+    );
+    check("slow prefill pulsed onHeartbeat at least once", heartbeats.length >= 1, `heartbeats=${heartbeats.length}`);
+    check("heartbeat carries phase + elapsed", heartbeats.every(h => (h.phase === "prefill" || h.phase === "loading") && typeof h.elapsedSec === "number"), JSON.stringify(heartbeats));
+    check("the 'Still working/waiting' pulse did NOT go to onNotice (no transcript spam)", !notices.some(n => /Still (working|waiting)/.test(n)), notices.join(" | "));
+    check("turn still completed normally after the slow prefill", String(hist[hist.length - 1]?.content).includes("slow prefill"));
+    server.stop(true);
+  }
+
   console.log(`\n${fail === 0 ? "WATCHDOG/PS OK" : "WATCHDOG/PS FAILED"}: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 };

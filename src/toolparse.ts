@@ -15,6 +15,7 @@
 // and a bare {"name","arguments"} object.
 
 import { canonicalToolName } from "./tools/executor";
+import { TOOL_DEFINITIONS } from "./tools/definitions";
 
 export interface ParsedToolCall {
   name: string;
@@ -31,7 +32,9 @@ export const TOOL_NAMES = [
   "page_open", "page_navigate",
   "search_code", "index_workspace", "remember", "recall",
   "task_add", "task_done", "task_list", "spawn_agents",
+  "set_todos", "propose_plan",
   "browser_console", "browser_network", "browser_performance",
+  "search_via_chrome",
 ];
 
 function stripEdgeNewlines(s: string): string {
@@ -103,11 +106,17 @@ function parseXmlToolCalls(content: string): ParsedToolCall[] {
       if (!args.text) args.text = stripEdgeNewlines(body).trim();
     } else if (name === "task_done") {
       if (!args.task) args.task = stripEdgeNewlines(body).trim();
-    } else if (name === "search_code") {
+    } else if (name === "search_code" || name === "search_via_chrome") {
       if (!args.query) args.query = stripEdgeNewlines(body).trim();
     } else if (name === "spawn_agents") {
       // One task per line (or separated by |) in the body.
       if (!args.tasks) args.tasks = stripEdgeNewlines(body).split(/\||\n/).map(s => s.trim()).filter(Boolean);
+    } else if (name === "set_todos") {
+      // One checklist item per line: "[ ] pending", "[>] in progress", "[x] done".
+      if (!args.todos) args.todos = stripEdgeNewlines(body).split(/\n/).map(s => s.trim()).filter(Boolean);
+    } else if (name === "propose_plan") {
+      // The tag body is the full plan markdown.
+      if (!args.plan) args.plan = stripEdgeNewlines(body);
     }
     resolvePathArg(args, body);
     calls.push({ name, arguments: args });
@@ -162,12 +171,16 @@ export function parseToolCalls(content: string): ParsedToolCall[] {
   const xml = parseXmlToolCalls(content);
   if (xml.length) return xml;
 
-  // 2. <tool_call>{json}</tool_call>
-  const tagRe = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+  // 2. <tool_call>{json}</tool_call> — also <tool_calls> and <tools> (some
+  //    chat templates, e.g. certain Qwen AWQ builds served by vLLM, emit the
+  //    call wrapped in <tools>…</tools> in CONTENT with an empty native
+  //    tool_calls field, so we recover it here).
+  const tagRe = /<(tool_call|tool_calls|tools)>\s*([\s\S]*?)\s*<\/\1>/gi;
   const tagged: ParsedToolCall[] = [];
   let m: RegExpExecArray | null;
   while ((m = tagRe.exec(content)) !== null) {
-    const call = asToolCall(m[1] ?? "") ?? collectCalls(m[1] ?? "")[0];
+    const inner = m[2] ?? "";
+    const call = asToolCall(inner) ?? collectCalls(inner)[0];
     if (call) tagged.push(call);
   }
   if (tagged.length) return tagged;
@@ -189,6 +202,51 @@ export function parseToolCalls(content: string): ParsedToolCall[] {
 
 export function hasToolCall(content: string): boolean {
   return parseToolCalls(content).length > 0;
+}
+
+// ─── Leaked tool call recovery (gpt-oss / harmony) ────────────────────────────
+// Each tool's required params and the full set of param names it accepts,
+// derived from the schemas. Tools with no required param are excluded — their
+// shape is too loose to infer safely.
+const TOOL_ARG_SIGNATURES = TOOL_DEFINITIONS.map((t) => {
+  const fn: any = (t as any).function;
+  const props = fn?.parameters?.properties ?? {};
+  return {
+    name: fn.name as string,
+    required: (fn?.parameters?.required ?? []) as string[],
+    allowed: Object.keys(props),
+  };
+}).filter((s) => s.required.length > 0);
+
+// gpt-oss/harmony on Ollama sometimes emits a tool call's ARGUMENTS as a bare
+// JSON object in the content channel: the function name lived in the dropped
+// channel header ("…to=functions.write_file…"), so we get {"path":…,"content":…}
+// with no `name` and the call dead-ends as a "final answer". Recover it by
+// matching the argument shape to exactly one tool. Deliberately strict to avoid
+// turning a legitimate JSON answer into an action:
+//   - the ENTIRE text must be a single JSON object (not JSON embedded in prose),
+//   - it must have NO `name` key (a named call is handled by parseToolCalls),
+//   - every required param of the tool must be present,
+//   - every key must be a known param of that tool (no foreign keys), and
+//   - exactly ONE tool may match (ambiguous shapes like {command} are skipped).
+// Mutating tools still hit the permission prompt downstream, so a wrong guess is
+// shown to the user as a diff before anything happens.
+export function parseLeakedToolCall(content: string): ParsedToolCall[] {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{")) return [];
+  const found = extractBalancedObject(trimmed, 0);
+  if (!found || found.end < trimmed.length) return []; // must be the whole text
+  let obj: any;
+  try { obj = JSON.parse(found.json); } catch { return []; }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return [];
+  if (typeof obj.name === "string") return []; // named → parseToolCalls handles it
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return [];
+  const matches = TOOL_ARG_SIGNATURES.filter(
+    (sig) => sig.required.every((r) => keys.includes(r)) && keys.every((k) => sig.allowed.includes(k))
+  );
+  if (matches.length !== 1) return []; // none or ambiguous → don't guess
+  return [{ name: matches[0]!.name, arguments: obj }];
 }
 
 // True when `text` parses to a call for a KNOWN tool (after alias normalization).

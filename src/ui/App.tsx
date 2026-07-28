@@ -3,10 +3,11 @@ import { Box, Text, Static, useApp, useInput } from "ink";
 import { existsSync, readFileSync, statSync } from "fs";
 import { resolve } from "path";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
-import { getConfig, saveConfig } from "../config";
+import { getConfig, saveConfig, rememberModelForBaseUrl } from "../config";
 import { systemPrompt, type Mode } from "../prompt";
 import { chat, resetClient, estimateTokens, summarizeConversation, compactHistory, warmUp } from "../llm";
-import { listOllamaModelsWithContext, modelHint, modelInfo, modelDiskSize, agentFitnessWarning } from "../ollama";
+import { resetOrchestratorState } from "../orchestrator-state";
+import { listModelsForPicker, listOpenAIModels, detectProvider, modelHint, modelInfo, modelDiskSize, agentFitnessWarning } from "../ollama";
 import { modelFitWarning } from "../sysinfo";
 import { buildDiffView, type DiffView } from "../diff";
 import { computeHunks, applyHunks, type Hunk } from "../hunks";
@@ -23,6 +24,7 @@ import {
   GeneratingLine, type ToolView, type StatusState,
 } from "./components";
 import { expandSelection, readFilesAsContext } from "../files";
+import { clearSessionTodos } from "../todos";
 import { learnProfileInstruction, profileFilePath, listProfileNames, setActiveProfile, getActiveProfileName } from "../profile";
 import { stopAllServers } from "../proc";
 
@@ -45,16 +47,63 @@ type Overlay =
       partialTexts?: { oldText: string; newText: string; argKey: "new_string" | "content"; args: any };
       resolve: (ok: boolean | { args: any }) => void;
     }
-  | { kind: "plan" }
+  // With `resolve`: tool-driven (propose_plan mid-turn) — the decision goes back
+  // to the paused chat loop. Without: the legacy post-turn plan-mode offer.
+  | { kind: "plan"; resolve?: (d: "approve" | "keep" | "reject") => void }
   | { kind: "model"; models: string[]; hints: Record<string, string>; loading: boolean }
   | { kind: "chats"; sessions: SessionMeta[] }
   | { kind: "profiles"; names: string[] }
   | { kind: "choice"; question: string; options: string[]; resolve: (answer: string) => void }
   | { kind: "files" };
 
+function parsePartialJson(str: string): any {
+  try {
+    return JSON.parse(str);
+  } catch {}
+
+  const result: any = {};
+  const re = /"([^"]+)"\s*:\s*("(?:[^"\\]|\\.)*")/g;
+  let m;
+  while ((m = re.exec(str)) !== null) {
+    const key = m[1]!;
+    try {
+      result[key] = JSON.parse(m[2]!);
+    } catch {
+      let rawVal = m[2]!;
+      if (!rawVal.endsWith('"')) rawVal += '"';
+      try {
+        result[key] = JSON.parse(rawVal);
+      } catch {}
+    }
+  }
+
+  const reNonStr = /"([^"]+)"\s*:\s*(true|false|[0-9.-]+)/g;
+  while ((m = reNonStr.exec(str)) !== null) {
+    const key = m[1]!;
+    const val = m[2]!;
+    if (val === "true") result[key] = true;
+    else if (val === "false") result[key] = false;
+    else {
+      const num = Number(val);
+      if (!isNaN(num)) result[key] = num;
+    }
+  }
+
+  const lastOpenRe = /"([^"]+)"\s*:\s*"([^"]*)$/;
+  const openMatch = lastOpenRe.exec(str);
+  if (openMatch) {
+    const key = openMatch[1]!;
+    let val = openMatch[2]!;
+    if (val.endsWith("\\")) val = val.slice(0, -1);
+    result[key] = val;
+  }
+
+  return result;
+}
+
 function summarize(name: string, argsJson: string): string {
   let a: any = {};
-  try { a = JSON.parse(argsJson || "{}"); } catch {}
+  try { a = parsePartialJson(argsJson || "{}"); } catch {}
   switch (name) {
     case "read_file": case "write_file": case "edit_file": case "delete_file": return a.path ?? "";
     case "glob_files": return a.pattern ?? "";
@@ -85,6 +134,15 @@ function summarize(name: string, argsJson: string): string {
     case "task_add": return a.text ?? "";
     case "task_done": return String(a.task ?? a.index ?? "");
     case "task_list": return "";
+    case "set_todos": {
+      const t = Array.isArray(a.todos) ? a.todos : [];
+      const done = t.filter((x: any) => x?.status === "completed" || /^\s*[-*]?\s*\[[xX]\]/.test(String(x))).length;
+      return t.length ? `${done}/${t.length} done` : "";
+    }
+    case "propose_plan": {
+      const first = String(a.plan ?? "").split("\n").find((l: string) => l.trim()) ?? "";
+      return first.length > 60 ? first.slice(0, 60) + "…" : first;
+    }
     case "spawn_agents": {
       const t = Array.isArray(a.tasks) ? a.tasks : [];
       return `${t.length || "?"} agent${t.length === 1 ? "" : "s"}`;
@@ -107,7 +165,9 @@ function permDetail(name: string, args: any): string {
   if (name === "screenshot") return `capture your screen and analyze it with the vision model`;
   if (name === "spawn_agents") {
     const t = Array.isArray(args.tasks) ? args.tasks : [];
-    return `spawn ${t.length} sub-agent${t.length === 1 ? "" : "s"}${args.allow_writes ? " (WITH write access)" : " (read-only)"}:\n` +
+    const roleWrites = t.some((x: any) => /^\s*(test|code|fix|patch)\s*:/i.test(String(x)));
+    const access = args.allow_writes ? " (WITH write access)" : roleWrites ? " (test/code/fix role tasks may run commands & modify files)" : " (read-only)";
+    return `spawn ${t.length} sub-agent${t.length === 1 ? "" : "s"}${access}:\n` +
       t.map((x: string, i: number) => `  ${String.fromCharCode(65 + i)}: ${String(x).slice(0, 80)}`).join("\n");
   }
   return JSON.stringify(args);
@@ -206,8 +266,20 @@ export function App({ autoResume = false }: AppProps) {
   const [liveOut, setLiveOut] = useState(0);  // live output tokens for the in-flight turn
   const [elapsed, setElapsed] = useState(0);  // seconds the current turn has been running
   const [phase, setPhase] = useState<"loading" | "prefill" | "generating" | null>(null); // what the model is doing right now
+  const [waitNote, setWaitNote] = useState<string | null>(null); // ephemeral "still working" pulse (refreshed in place, never committed)
   const [mode, setModeState] = useState<Mode>((cfg.mode as Mode) ?? "normal");
+  // Which backend the CLI is actually talking to (ollama / vllm / openai) —
+  // shown as a chip in the status bar so a wrong/dead backend is visible at a
+  // glance instead of surfacing as a cryptic fetch error mid-message.
+  const [provider, setProvider] = useState<string>("");
   const [, force] = useReducer((x: number) => x + 1, 0);
+
+  const refreshProvider = () => {
+    const c = getConfig();
+    detectProvider(c.baseUrl, c.provider)
+      .then(p => setProvider(p))
+      .catch(() => setProvider(""));
+  };
 
   const historyRef = useRef<ChatCompletionMessageParam[]>([{ role: "system", content: systemPrompt({ mode: "normal" }) }]);
   const answerRef = useRef("");
@@ -226,33 +298,59 @@ export function App({ autoResume = false }: AppProps) {
   const commit = (item: ItemInput) => setCommitted(c => [...c, { ...item, id: nextId() } as Item]);
   const recomputeTokens = () => setTokens(estimateTokens(historyRef.current));
 
-  // Keep the context window in step with the selected model's NATIVE limit.
-  // We ALWAYS adopt the model's full native context — never cap it — so a large-
-  // context model gets the window it actually supports. (A too-small num_ctx
-  // silently truncates the prompt, which is what made big-context models return
-  // an empty response.) This runs on startup and on every model switch, setting
-  // the window to exactly the native length in both directions — so a leftover
-  // value from a different model (too big OR too small) is corrected.
+  // Keep the context window at the model's FULL NATIVE MAX (the user's explicit
+  // preference: always the highest context the model supports). For Ollama this
+  // becomes num_ctx, whose entire KV cache is pre-allocated on load — so a very
+  // large window is slower unless the KV cache is quantized (start Ollama with
+  // OLLAMA_FLASH_ATTENTION=1 + OLLAMA_KV_CACHE_TYPE=q8_0) or vLLM is used. The
+  // user can still pin a smaller value with /config contextWindow <n>.
   const syncContextForModel = async (m: string, opts: { force: boolean }) => {
     try {
-      const info = await modelInfo(getConfig().baseUrl, m);
-      const native = info?.contextLength;
+      const { baseUrl, provider } = getConfig();
+      const detected = await detectProvider(baseUrl, provider);
+      // Native context limit per backend: Ollama exposes it via /api/show; vLLM
+      // (and other OpenAI servers) report it as max_model_len in /v1/models.
+      let native: number | undefined;
+      if (detected === "ollama") {
+        native = (await modelInfo(baseUrl, m))?.contextLength;
+      } else {
+        native = (await listOpenAIModels(baseUrl).catch(() => [])).find(x => x.name === m)?.contextLength;
+      }
       if (!native) return;
       const current = getConfig().contextWindow;
-      if (native !== current) {
+      // A user-pinned window (set via /config contextWindow <n>) is never auto-
+      // changed except to LOWER it when it exceeds this model's native limit
+      // (a larger num_ctx than the model supports is rejected/invalid).
+      if (getConfig().contextWindowPinned) {
+        if (native < current) {
+          saveConfig({ contextWindow: native });
+          setContextWindow(native);
+          commit({ kind: "system", text: `Context window lowered to ${native.toLocaleString()} tokens — ${m}'s native limit is below your pinned ${current.toLocaleString()}.` });
+        } else {
+          setContextWindow(current);
+        }
+      } else if (native !== current) {
+        // Not pinned: adopt the model's full native max (highest available).
         saveConfig({ contextWindow: native });
         setContextWindow(native);
         if (opts.force) {
-          commit({ kind: "system", text: `Context window set to ${native.toLocaleString()} tokens for ${m} (its native limit).` });
+          commit({
+            kind: "system",
+            text: `Context window set to ${native.toLocaleString()} tokens for ${m} (its full native max).` +
+              (detected === "ollama"
+                ? ` Ollama pre-allocates this whole window as KV cache, so if generation is slow, quantize it (start Ollama with OLLAMA_FLASH_ATTENTION=1 and OLLAMA_KV_CACHE_TYPE=q8_0) or use vLLM. To trade context for speed instead: /config contextWindow <n>.`
+                : ""),
+          });
         }
       } else {
         setContextWindow(current);
       }
-      // Proactive heads-up if this model (weights + native KV cache) won't fit
-      // the GPU/RAM budget — so a too-big model doesn't silently thrash.
+      // Proactive heads-up if the model's WEIGHTS (plus the KV cache for the
+      // window we actually chose) still won't fit the budget — i.e. the model
+      // itself is too big, or its full native context won't fit VRAM at all.
       if (opts.force) {
         const size = await modelDiskSize(getConfig().baseUrl, m);
-        const warn = modelFitWarning(size, native);
+        const warn = modelFitWarning(size, getConfig().contextWindow);
         if (warn) commit({ kind: "system", text: warn, tone: "error" });
       }
     } catch { /* model info unavailable — keep the current setting */ }
@@ -274,9 +372,9 @@ export function App({ autoResume = false }: AppProps) {
     historyRef.current[0] = { role: "system", content: systemPrompt({ mode: m }) };
   };
 
-  // shift+tab cycles: normal → plan → auto-accept → debug → normal.
+  // shift+tab cycles: chat → normal → plan → auto-accept → debug → chat.
   const cycleMode = () => {
-    const order: Mode[] = ["normal", "plan", "auto", "debug"];
+    const order: Mode[] = ["chat", "normal", "plan", "auto", "debug"];
     const next = order[(order.indexOf(modeRef.current) + 1) % order.length]!;
     setMode(next);
   };
@@ -300,6 +398,8 @@ export function App({ autoResume = false }: AppProps) {
     const sess = id ? loadSession(c.cwd, id) : latestSession(c.cwd);
     if (!sess) { commit({ kind: "system", text: "No saved session to resume for this folder.", tone: "error" }); return; }
     historyRef.current = sess.history;
+    resetOrchestratorState(); // don't carry error-streak / green-field state into a resumed chat
+    clearSessionTodos();      // the live checklist belongs to the chat it was made in
     sessionIdRef.current = sess.id;
     createdAtRef.current = sess.createdAt;
     const items = rebuildTranscript(sess.history);
@@ -316,6 +416,8 @@ export function App({ autoResume = false }: AppProps) {
   const startNewChat = () => {
     autosave();
     historyRef.current = [{ role: "system", content: systemPrompt({ mode: modeRef.current }) }];
+    resetOrchestratorState(); // fresh chat = fresh error-streak / green-field state
+    clearSessionTodos();      // fresh chat = fresh live checklist
     const c = getConfig();
     sessionIdRef.current = newSessionId();
     createdAtRef.current = Date.now();
@@ -398,6 +500,7 @@ export function App({ autoResume = false }: AppProps) {
     setStatus("thinking");
     setLiveOut(0);
     setPhase(null);
+    setWaitNote(null);
     turnHadAnswerRef.current = false;
     const ac = new AbortController();
     abortRef.current = ac;
@@ -425,9 +528,18 @@ export function App({ autoResume = false }: AppProps) {
           onToolCall: (name, argsJson) => {
             writeSeg(null);
             flushActive();
+            let args: any = {};
+            try { args = JSON.parse(argsJson || "{}"); } catch {}
             const summary = summarize(name, argsJson);
             currentToolRef.current = { name, summary };
-            setLiveTool({ name, summary, status: "running" });
+            setLiveTool({ name, summary, status: "running", args });
+          },
+          onToolCallProgress: (name, argsJson) => {
+            let args: any = {};
+            try { args = parsePartialJson(argsJson || "{}"); } catch {}
+            const summary = summarize(name, argsJson);
+            currentToolRef.current = { name, summary };
+            setLiveTool({ name, summary, status: "running", args });
           },
           onToolResult: (name, result) => {
             const summary = currentToolRef.current?.summary ?? "";
@@ -437,11 +549,28 @@ export function App({ autoResume = false }: AppProps) {
               tool: { name, summary, result, status: result.includes("denied by user") ? "denied" : "done" },
             });
           },
-          onError: (e) => commit({ kind: "system", text: e.message, tone: "error" }),
+          onError: (e) => {
+            // A dead/wrong backend surfaces as a bare fetch error — translate it
+            // into something actionable instead of a stack-trace shrug.
+            const msg = String(e?.message ?? e);
+            const conn = /fetch failed|econnrefused|enotfound|unable to connect|socket|network|terminated/i.test(msg);
+            commit({
+              kind: "system",
+              text: conn
+                ? `Can't reach the model server at ${getConfig().baseUrl} — is it running?\nRun /backend to see which backends are up and switch (ollama ↔ vllm).`
+                : msg,
+              tone: "error",
+            });
+          },
           onNotice: (msg) => commit({ kind: "system", text: msg }),
+          // Heartbeat is ephemeral: refresh ONE line in place. Each new turn's
+          // prefill wait replaces the previous note instead of stacking up.
+          onHeartbeat: (msg) => setWaitNote(msg),
           onUsage: (u) => setUsage(prev => ({ inTok: prev.inTok + u.inputTokens, outTok: prev.outTok + u.outputTokens, tps: u.tokPerSec || prev.tps })),
           onProgress: (t) => setLiveOut(t),
-          onStatus: (p) => setPhase(p),
+          // Any status change means a fresh turn phase — the moment the model
+          // actually produces tokens ("generating") the wait note is obsolete.
+          onStatus: (p) => { setPhase(p); setWaitNote(null); },
           requestPermission: async (name, args) => {
             if (sessionAllowRef.current.has(name)) return true;
             return new Promise<boolean | { args: any }>((res) => {
@@ -475,8 +604,17 @@ export function App({ autoResume = false }: AppProps) {
               setOverlay({ kind: "choice", question, options: opts, resolve: res });
             });
           },
+          requestPlanApproval: async (plan) => {
+            // Show the plan in the transcript, then pause on the approval prompt.
+            writeSeg(null);
+            flushActive();
+            commit({ kind: "assistant", text: plan });
+            return new Promise<"approve" | "keep" | "reject">((res) => {
+              setOverlay({ kind: "plan", resolve: res });
+            });
+          },
         },
-        { signal: ac.signal, planMode: modeRef.current === "plan", autoAccept: modeRef.current === "auto" }
+        { signal: ac.signal, planMode: modeRef.current === "plan", chatMode: modeRef.current === "chat", autoAccept: modeRef.current === "auto" }
       );
     } catch (e: any) {
       commit({ kind: "system", text: `Fatal error: ${e.message}`, tone: "error" });
@@ -486,6 +624,7 @@ export function App({ autoResume = false }: AppProps) {
     abortRef.current = null;
     setStatus("idle");
     setPhase(null);
+    setWaitNote(null);
     recomputeTokens();
 
     // After a plan-mode turn that produced a plan, offer to approve it.
@@ -518,7 +657,36 @@ export function App({ autoResume = false }: AppProps) {
   };
 
   const decidePlan = (d: "approve" | "keep" | "cancel") => {
+    const ov = overlay;
     setOverlay(null);
+
+    // Tool-driven (propose_plan): resolve the paused chat loop — it handles the
+    // rest (the tool result tells the model to implement / refine / stop).
+    if (ov?.kind === "plan" && ov.resolve) {
+      if (d === "approve") {
+        // Only plan mode ends on approval — never silently yank the user out of
+        // auto/debug mode because the model proposed a plan there.
+        if (modeRef.current === "plan") {
+          setMode("normal");
+          commit({ kind: "system", text: "Plan approved — plan mode off; implementing now." });
+        } else {
+          commit({ kind: "system", text: "Plan approved — implementing now." });
+        }
+        // The plan was shown and decided inline; don't re-offer approval after
+        // the turn ends.
+        turnHadAnswerRef.current = false;
+        ov.resolve("approve");
+      } else if (d === "keep") {
+        commit({ kind: "system", text: "Not approved yet — the model will refine the plan." });
+        ov.resolve("keep");
+      } else {
+        commit({ kind: "system", text: "Plan rejected." });
+        ov.resolve("reject");
+      }
+      return;
+    }
+
+    // Legacy post-turn offer (the model printed a plan without propose_plan).
     if (d === "approve") {
       setMode("normal");
       historyRef.current.push({ role: "user", content: "The plan is approved. Implement it now, making the changes." });
@@ -559,11 +727,12 @@ export function App({ autoResume = false }: AppProps) {
     resume,
     openModelPicker: () => {
       const c = getConfig();
-      // Show whatever Ollama actually has installed (`ollama list`). The config
-      // list is only a fallback for when Ollama isn't reachable; we don't persist
-      // or merge it, so it can't drift from reality.
+      // Show whatever the active backend actually serves — Ollama's installed
+      // models or vLLM/OpenAI's /v1/models. The config list is only a fallback
+      // for when the backend isn't reachable; we don't persist or merge it, so
+      // it can't drift from reality.
       setOverlay({ kind: "model", models: c.models, hints: {}, loading: true });
-      listOllamaModelsWithContext(c.baseUrl)
+      listModelsForPicker(c.baseUrl, c.provider)
         .then(live => setOverlay(o => {
           if (o?.kind !== "model") return o;
           const names = live.length ? live.map(m => m.name) : c.models;
@@ -587,10 +756,19 @@ export function App({ autoResume = false }: AppProps) {
     if (!value) return;
 
     if (isCommand(value)) {
-      const prevModel = getConfig().model;
+      const prev = getConfig();
+      const prevModel = prev.model, prevBaseUrl = prev.baseUrl, prevProvider = prev.provider;
       await runCommand(value, buildCtx());
       const c = getConfig();
-      if (c.model !== prevModel) { setModel(c.model); void syncContextForModel(c.model, { force: true }); }
+      // A backend switch (/backend, /config baseUrl) must re-detect the provider
+      // chip and re-sync the context window even when the model name is
+      // unchanged — a stale context from the previous backend breaks requests
+      // (vLLM rejects prompts sized for another server's window).
+      if (c.model !== prevModel || c.baseUrl !== prevBaseUrl) {
+        setModel(c.model);
+        void syncContextForModel(c.model, { force: true });
+      }
+      if (c.baseUrl !== prevBaseUrl || c.provider !== prevProvider) refreshProvider();
       setCwd(c.cwd);
       return;
     }
@@ -606,8 +784,11 @@ export function App({ autoResume = false }: AppProps) {
   // the model so the first message doesn't wait on a cold load.
   useEffect(() => {
     if (autoResume) resume();
-    void warmUp();
-    void syncContextForModel(getConfig().model, { force: false });
+    refreshProvider();
+    // Sync the context window FIRST, then warm — otherwise warmUp loads the model
+    // at the old (possibly huge) num_ctx and the first real message reloads it at
+    // the corrected size (a double cold-load, and the warm one is the slow giant).
+    void syncContextForModel(getConfig().model, { force: false }).then(() => warmUp());
     // Best-effort: don't leave background servers running if the process dies.
     const cleanup = () => stopAllServers();
     process.on("exit", cleanup);
@@ -665,7 +846,7 @@ export function App({ autoResume = false }: AppProps) {
               const cur = m === model ? `${theme.icon.dot} current` : "";
               return { label: m, value: m, hint: [cur, spec].filter(Boolean).join("   ") };
             })}
-            onSelect={(m) => { saveConfig({ model: m }); resetClient(); setModel(m); setOverlay(null); commit({ kind: "system", text: `Model set to ${m}` }); void syncContextForModel(m, { force: true }); void agentFitnessWarning(getConfig().baseUrl, m).then(w => { if (w) commit({ kind: "system", text: w }); }).catch(() => {}); }}
+            onSelect={(m) => { saveConfig({ model: m }); rememberModelForBaseUrl(getConfig().baseUrl, m); resetClient(); setModel(m); setOverlay(null); commit({ kind: "system", text: `Model set to ${m}` }); void syncContextForModel(m, { force: true }); void agentFitnessWarning(getConfig().baseUrl, m).then(w => { if (w) commit({ kind: "system", text: w }); }).catch(() => {}); }}
             onCancel={() => setOverlay(null)}
           />
         ) : overlay?.kind === "chats" ? (
@@ -706,7 +887,7 @@ export function App({ autoResume = false }: AppProps) {
             commands={commandList()}
           />
         ) : (
-          <GeneratingLine tokens={liveOut} elapsed={elapsed} phase={phase} thinking={!!activeThinking.trim() && !activeAnswer.trim()} />
+          <GeneratingLine tokens={liveOut} elapsed={elapsed} phase={phase} thinking={!!activeThinking.trim() && !activeAnswer.trim()} note={waitNote} />
         );
 
   // Streaming transcript: committed turns flush to the terminal's native
@@ -723,10 +904,12 @@ export function App({ autoResume = false }: AppProps) {
       <Box flexDirection="column" marginTop={1}>
         <StatusBar
           model={model}
+          provider={provider}
           tokens={tokens}
           contextWindow={contextWindow}
           status={statusForBar}
           mode={mode}
+          tps={usage.tps}
         />
         {controls}
       </Box>
