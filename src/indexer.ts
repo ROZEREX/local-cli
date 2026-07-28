@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs
 import { join, dirname, relative } from "path";
 import { glob } from "glob";
 import { getConfig } from "./config";
+import { isIncognito } from "./incognito";
 
 // Workspace indexing: scan the project once, extract symbols (functions,
 // classes, endpoints, components) and text chunks, and persist the result to
@@ -142,6 +143,7 @@ export async function buildIndex(): Promise<WorkspaceIndex> {
 }
 
 export function saveIndex(index: WorkspaceIndex): void {
+  if (isIncognito()) return; // the index holds code excerpts — keep it in memory only
   const fp = indexFilePath();
   const dir = dirname(fp);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

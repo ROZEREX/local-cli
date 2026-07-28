@@ -3,6 +3,7 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 import { platform } from "os";
 import { configDir, getConfig, saveConfig } from "./config";
+import { isIncognito } from "./incognito";
 
 // A "coding profile" is a personal, cross-project description of HOW the user
 // likes code written — stack, directory/file naming, conventions, practices.
@@ -82,6 +83,7 @@ export function readProfileByName(name: string): string | null {
 // Write (replace) or append to a named profile. Creates the profiles dir and the
 // file if needed. If this is the first profile, it becomes active.
 export function writeProfileByName(name: string, content: string, mode: "replace" | "append" = "replace"): void {
+  if (isIncognito()) return; // profiles are cross-project and permanent — never written in incognito
   ensureMigrated();
   const dir = profilesDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -97,6 +99,7 @@ export function writeProfileByName(name: string, content: string, mode: "replace
 }
 
 export function deleteProfileByName(name: string): boolean {
+  if (isIncognito()) return false; // deletion is a disk change too
   ensureMigrated();
   const fp = profileFile(name);
   if (!existsSync(fp)) return false;

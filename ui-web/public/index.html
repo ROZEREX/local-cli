@@ -24,6 +24,8 @@
             grn: "#22c55e",
             warn: "#f59e0b",
             danger: "#ef4444",
+            incog: "#a78bfa",
+            incogdeep: "#1a1626",
           },
           fontFamily: {
             sans: ["Geist", "Inter", "system-ui", "sans-serif"],
@@ -101,7 +103,8 @@
         </div>
 
         <div id="mode" class="flex bg-zinc-900 border border-edge rounded-full p-0.5 gap-0.5 text-[11px] font-semibold text-dim">
-          <button data-mode="normal" class="mode-btn px-3 py-1 transition-colors">normal</button>
+          <button data-mode="chat" class="mode-btn px-3 py-1 transition-colors" title="Talk only — answers in the message, never creates or edits files">chat</button>
+          <button data-mode="normal" class="mode-btn px-3 py-1 transition-colors" title="Build, asking permission per action">normal</button>
           <button data-mode="plan" class="mode-btn px-3 py-1 transition-colors">plan</button>
           <button data-mode="auto" class="mode-btn px-3 py-1 transition-colors">auto</button>
           <button data-mode="debug" class="mode-btn px-3 py-1 transition-colors" title="Investigate, fix & verify using logs, console, network">debug</button>
@@ -109,6 +112,10 @@
 
         <button id="think-btn" class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-edge text-dim hover:text-white transition" title="Toggle reasoning text">
           <i data-lucide="brain" class="w-3.5 h-3.5"></i> think
+        </button>
+
+        <button id="incognito-btn" class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-edge text-dim hover:text-white transition" title="Incognito — nothing written to disk, nothing sent off this machine">
+          <i data-lucide="venetian-mask" class="w-3.5 h-3.5"></i> incognito
         </button>
 
         <!-- Right header items -->
@@ -127,11 +134,31 @@
         </div>
       </header>
 
+      <!-- Incognito banner -->
+      <div id="incog-bar" class="hidden shrink-0 border-b border-incog/25 bg-incogdeep px-4 md:px-8 py-2.5">
+        <div class="max-w-4xl mx-auto flex items-center gap-3">
+          <i data-lucide="venetian-mask" class="w-4 h-4 text-incog shrink-0"></i>
+          <div class="min-w-0 flex-1">
+            <div class="text-[12px] text-incog font-semibold">Incognito — this chat is not being saved</div>
+            <div id="incog-sub" class="text-[11px] text-zinc-400 truncate">No transcript, memory, profile or undo snapshot. Lookups run in a throwaway browser. File edits still change your disk.</div>
+          </div>
+          <button id="incog-what" class="shrink-0 text-[11px] px-3 py-1 rounded-full border border-incog/40 text-incog hover:bg-incog/10 transition">What this does</button>
+          <button id="incog-off" class="shrink-0 text-[11px] px-3 py-1 rounded-full border border-edge text-dim hover:text-white transition">Turn off</button>
+        </div>
+      </div>
+
       <!-- Messages Stream -->
       <main id="messages" class="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 scroll-smooth"></main>
 
       <!-- Input Footer -->
       <div class="px-4 md:px-8 pb-5 pt-3 border-t border-edge/60">
+        <!-- Possible-loop warning: advisory, the turn keeps running -->
+        <div id="loop-warn" class="hidden items-center gap-3 text-[11px] mb-2.5 border border-warn/40 bg-warn/10 px-4 py-2 rounded-2xl max-w-4xl mx-auto">
+          <i data-lucide="rotate-cw" class="w-3.5 h-3.5 text-warn shrink-0"></i>
+          <span id="loop-warn-text" class="text-warn flex-1 min-w-0"></span>
+          <button id="loop-warn-stop" class="shrink-0 px-3 py-1 rounded-full bg-danger text-white font-bold hover:bg-red-600 transition">Stop now</button>
+          <button id="loop-warn-ok" class="shrink-0 px-3 py-1 rounded-full border border-warn/40 text-warn hover:bg-warn/10 transition">It's fine</button>
+        </div>
         <div id="live" class="hidden items-center gap-2 font-mono text-[11px] text-zinc-400 mb-2.5 border border-edge bg-panel px-4 py-2 rounded-full w-fit max-w-full mx-auto"></div>
         <div id="img-previews" class="hidden flex-wrap gap-2 mb-2.5 max-w-4xl mx-auto"></div>
         <form id="form" class="flex items-end gap-2 max-w-4xl mx-auto">

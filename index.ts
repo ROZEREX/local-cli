@@ -3,7 +3,7 @@ import React from "react";
 import { render } from "ink";
 import chalk from "chalk";
 import { getConfig, saveConfig } from "./src/config";
-import { applyTheme } from "./src/ui/theme";
+import { applyTheme, applyIconStyle } from "./src/ui/theme";
 import { App } from "./src/ui/App";
 import { chat } from "./src/llm";
 import { systemPrompt } from "./src/prompt";
@@ -89,6 +89,7 @@ async function main() {
   // Always anchor cwd to where the user launched the CLI.
   saveConfig({ cwd: process.cwd() });
   applyTheme(getConfig().theme);
+  applyIconStyle(getConfig().iconStyle ?? "auto");
 
   if (opts.prompt) {
     await oneShot(opts.prompt);

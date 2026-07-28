@@ -285,15 +285,33 @@ export function hashString(s: string): string {
 
 export class ToolLoopGuard {
   private history: string[] = [];
+  // How many times this turn the guard has flagged a repeat. The caller uses it
+  // to escalate (nudge the model first, only stop if it keeps happening) rather
+  // than killing a turn on the first suspicion.
+  private _trips = 0;
+  private _lastSignature = "";
 
-  constructor(private reps = 3) {}
+  // reps was 3, which fired on legitimate work: re-reading the same file to
+  // double-check, or re-running a test command that keeps producing identical
+  // output while you fix something else, are normal — not loops. 4 consecutive
+  // identical (tool, args, result) cycles is a much safer bar.
+  constructor(private reps = 4) {}
+
+  get trips(): number { return this._trips; }
+  get lastSignature(): string { return this._lastSignature; }
 
   record(name: string, args: any, result: string): boolean {
     const argsStr = normalizeArgs(args);
     const resHash = hashString(result);
     const sig = `${name}|${argsStr}|${resHash}`;
     this.history.push(sig);
-    return this.detect();
+    if (!this.detect()) return false;
+    // Trip, then clear: without this the guard re-fires on every subsequent
+    // call, burying the user in warnings about one incident.
+    this._trips++;
+    this._lastSignature = name;
+    this.history = [];
+    return true;
   }
 
   private detect(): boolean {

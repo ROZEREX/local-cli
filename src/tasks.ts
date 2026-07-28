@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import { getConfig } from "./config";
+import { isIncognito } from "./incognito";
 
 // Lightweight per-project task list — a markdown checklist the agent (and the
 // user, via /tasks) maintains in <project>/.local-cli/tasks.md. Open tasks are
@@ -32,6 +33,7 @@ export function readTasks(): TaskItem[] {
 }
 
 function writeTasks(items: TaskItem[]): void {
+  if (isIncognito()) return;
   const fp = tasksFilePath();
   const dir = dirname(fp);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

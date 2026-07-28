@@ -38,7 +38,7 @@ const serverA = Bun.serve({
 const dir = mkdtempSync(join(tmpdir(), "lcli-stall-"));
 
 const run = async () => {
-  saveConfig({ cwd: dir, baseUrl: `http://localhost:${serverA.port}/v1`, apiKey: "t", model: "mock", mode: "auto" });
+  saveConfig({ cwd: dir, baseUrl: `http://localhost:${serverA.port}/v1`, apiKey: "t", model: "mock", mode: "auto", toolMode: "native" });
   resetClient();
   const toolCalls: string[] = [];
   await chat([{ role: "system", content: "t" }, { role: "user", content: "fix tailwind" }], {
@@ -61,7 +61,7 @@ const run = async () => {
       return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
     },
   });
-  saveConfig({ baseUrl: `http://localhost:${serverB.port}/v1` });
+  saveConfig({ baseUrl: `http://localhost:${serverB.port}/v1`, toolMode: "native" });
   resetClient();
   await chat([{ role: "system", content: "t" }, { role: "user", content: "summary" }], { onText: () => {}, onToolCall: () => {}, onToolResult: () => {}, onError: () => {} });
   check("a genuine final answer is NOT nudged", !bNudge && bCalls === 1, `nudge=${bNudge} calls=${bCalls}`);

@@ -21,23 +21,23 @@ guard.record("edit_file", { path: "a.txt", target: "A" }, "success");
 guard.record("read_file", { path: "a.txt" }, "content B");
 check("does not trip on unique sequences", !guard.record("edit_file", { path: "a.txt", target: "B" }, "success"));
 
-// Scenario 2: Cycle of 1 repeats 3 times
+// Scenario 2: cycle of 1. The bar is now FOUR repeats, not three — three
+// identical calls happen during legitimate work (re-reading a file to
+// double-check, re-running a test whose output hasn't changed yet).
 guard = new ToolLoopGuard();
 guard.record("bash", { cmd: "npm run dev" }, "Port 3000 in use");
 guard.record("bash", { cmd: "npm run dev" }, "Port 3000 in use");
-check("trips on cycle of 1 repeating 3 times", guard.record("bash", { cmd: "npm run dev" }, "Port 3000 in use"));
+check("does NOT trip on cycle of 1 repeating only 3 times", !guard.record("bash", { cmd: "npm run dev" }, "Port 3000 in use"));
+check("trips on cycle of 1 repeating 4 times", guard.record("bash", { cmd: "npm run dev" }, "Port 3000 in use"));
 
-// Scenario 3: Cycle of 2 repeats 3 times
+// Scenario 3: cycle of 2, now needing 4 full cycles.
 guard = new ToolLoopGuard();
-// Cycle 1
+for (let i = 0; i < 3; i++) {
+  guard.record("read_file", { path: "x.ts" }, "code");
+  guard.record("edit_file", { path: "x.ts", change: "1" }, "Error: not found");
+}
 guard.record("read_file", { path: "x.ts" }, "code");
-guard.record("edit_file", { path: "x.ts", change: "1" }, "Error: not found");
-// Cycle 2
-guard.record("read_file", { path: "x.ts" }, "code");
-guard.record("edit_file", { path: "x.ts", change: "1" }, "Error: not found");
-// Cycle 3
-guard.record("read_file", { path: "x.ts" }, "code");
-check("trips on cycle of 2 repeating 3 times", guard.record("edit_file", { path: "x.ts", change: "1" }, "Error: not found"));
+check("trips on cycle of 2 repeating 4 times", guard.record("edit_file", { path: "x.ts", change: "1" }, "Error: not found"));
 
 // Scenario 4: Non-repeating due to argument change (progress)
 guard = new ToolLoopGuard();
@@ -82,18 +82,19 @@ const server = Bun.serve({
         // Mock the loop sequence:
         // Turn 1, 3, 5: calls read_file
         // Turn 2, 4, 6: calls edit_file
-        if (turn === 1 || turn === 3 || turn === 5) {
+        // Four full read→edit cycles (8 calls) so the raised threshold is met.
+        if (turn <= 8 && turn % 2 === 1) {
           enc(sse({ choices: [{ index: 0, delta: { role: "assistant", content: null,
             tool_calls: [{ index: 0, id: `call_${turn}`, type: "function",
               function: { name: "read_file", arguments: '{"path":"main.jsx"}' } }] }, finish_reason: null }] }));
           enc(sse({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }));
-        } else if (turn === 2 || turn === 4 || turn === 6) {
+        } else if (turn <= 8) {
           enc(sse({ choices: [{ index: 0, delta: { role: "assistant", content: null,
             tool_calls: [{ index: 0, id: `call_${turn}`, type: "function",
               function: { name: "edit_file", arguments: '{"path":"main.jsx","old":"foo","new":"bar"}' } }] }, finish_reason: null }] }));
           enc(sse({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }));
         } else {
-          // Turn 7 (should never be reached because loop guard stops it on turn 6)
+          // Reached now that the guard warns instead of aborting.
           enc(sse({ choices: [{ index: 0, delta: { content: "Done." }, finish_reason: null }] }));
           enc(sse({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }));
         }
@@ -115,6 +116,7 @@ const runIntegrationTest = async () => {
   resetClient();
 
   let noticeMsg = "";
+  let warned = 0, stopRequested = false;
   await chat(
     [
       { role: "system", content: "test" },
@@ -126,12 +128,18 @@ const runIntegrationTest = async () => {
       onToolResult: () => {},
       onError: () => {},
       onNotice: (msg) => { noticeMsg = msg; },
+      onLoopWarning: (i) => { warned++; if (i.willStop) stopRequested = true; },
       requestPermission: async () => true,
     }
   );
 
-  check("integration: loop was halted (fewer than 7 turns)", callCount < 7, `calls: ${callCount}`);
-  check("integration: loop guard notice was triggered", noticeMsg.includes("infinite tool-calling loop"));
+  // New contract: detection is ADVISORY. Killing a turn on a false positive is
+  // worse than a real loop running a few more iterations — maxIterations is the
+  // backstop and the user has a Stop button.
+  check("integration: loop was detected", warned > 0);
+  check("integration: it did NOT auto-abort (default loopAction is warn)", !stopRequested);
+  check("integration: the turn ran to completion", callCount >= 9, `calls: ${callCount}`);
+  check("integration: the user was told, without a scary stop", noticeMsg.includes("Heads up"));
 
   server.stop(true);
   rmSync(dir, { recursive: true, force: true });

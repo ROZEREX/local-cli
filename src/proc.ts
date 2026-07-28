@@ -34,6 +34,25 @@ function looksLikeError(line: string): boolean {
   return ERROR_LINE_RE.test(line) && !ERROR_FALSE_POSITIVE_RE.test(line);
 }
 
+// Dev servers (vite, next, etc.) emit ANSI escape sequences: colors, cursor
+// moves, OSC title sets, and spinner/progress redraws. Stored raw they render as
+// garbage in the web UI (e.g. "\x1b[33m\x1b[1m"), waste tokens for the model,
+// and break the URL/error detection below. Strip them at capture so logs are
+// clean for every consumer. (Canonical ansi-regex pattern; \u escapes keep the
+// control bytes readable in source.)
+const ANSI_RE = /[][[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d\/#&.:=?%@~_]*)*)?)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))/g;
+export function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "");
+}
+
+// A chunk may carry in-place progress redraws separated by carriage returns (a
+// spinner overwriting one line). A terminal only ever shows the segment after
+// the last \r, so keep that: "build...\rbuild...\rdone" becomes "done".
+export function collapseCarriageReturns(line: string): string {
+  const cr = line.lastIndexOf("\r");
+  return cr === -1 ? line : line.slice(cr + 1);
+}
+
 const MAX_LOG_LINES = 400;
 const registry = new Map<string, ServerProc>();
 let counter = 0;
@@ -56,8 +75,11 @@ function detectUrl(text: string): string | null {
 }
 
 function appendLog(p: ServerProc, chunk: string) {
-  const lines = chunk.replace(/\r\n/g, "\n").split("\n");
-  for (const line of lines) {
+  // Strip ANSI first (so a "\x1b[2K\r" clear-line+return collapses correctly),
+  // split into lines, then resolve any in-place \r progress redraws per line.
+  const lines = stripAnsi(chunk).replace(/\r\n/g, "\n").split("\n");
+  for (const raw of lines) {
+    const line = collapseCarriageReturns(raw);
     if (line === "") continue;
     p.logs.push(line);
     if (looksLikeError(line)) {

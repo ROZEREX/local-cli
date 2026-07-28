@@ -45,7 +45,7 @@ const server = Bun.serve({
 });
 
 const dir = mkdtempSync(join(tmpdir(), "localcli-ui-"));
-saveConfig({ cwd: dir, baseUrl: `http://localhost:${server.port}/v1`, apiKey: "t", model: "mock" });
+saveConfig({ cwd: dir, baseUrl: `http://localhost:${server.port}/v1`, apiKey: "t", model: "mock", toolMode: "native" });
 resetClient();
 
 const inst = render(<App />);
