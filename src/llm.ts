@@ -154,6 +154,7 @@ function outputBudget(messages: ChatCompletionMessageParam[], extraTokens = 0): 
   const cfg = getConfig();
   const promptEst = Math.ceil((estimateTokens(messages) + extraTokens) * 1.15);
   const room = cfg.contextWindow - promptEst - 512;
+  if (room < 256) throw new Error("Context budget exceeded. Reduce attachments or compact the conversation before continuing.");
   return Math.max(256, Math.min(cfg.maxTokens, room));
 }
 
@@ -1042,6 +1043,11 @@ export async function chat(
       callbacks.onNotice?.(`Detected error output from ${srvErrs.map(e => `[${e.id}]`).join(", ")} — passing it to the model.`);
     }
 
+    const extra = Math.ceil((buildRuntimeOverride().length + (useNative ? "" : promptedToolInstructions()).length) / 4) + (useNative ? TOOLS_TOKEN_EST : 0);
+    if (!(await fitContext(history, extra, callbacks.onNotice))) {
+      callbacks.onError?.(new Error("The project instructions or latest input exceed the available context budget. Use smaller attachments or a larger context window."));
+      break;
+    }
     if (useNative) {
       const outcome = await nativeTurn(history, callbacks, options, toolLoopGuard);
       if (outcome !== "empty") emptyRetries = 0; // a productive turn clears the streak
@@ -1121,7 +1127,7 @@ async function nativeTurn(
         messages: reqMessages,
         tools: TOOL_DEFINITIONS,
         tool_choice: "auto",
-        max_tokens: outputBudget(history, TOOLS_TOKEN_EST),
+        max_tokens: outputBudget(reqMessages, TOOLS_TOKEN_EST),
         temperature: cfg.temperature,
         stream: true,
       },
@@ -1463,10 +1469,44 @@ export function estimateTokens(messages: ChatCompletionMessageParam[]): number {
   return Math.round(json.length / 4) + images * 768;
 }
 
+export async function fitContext(history: ChatCompletionMessageParam[], extraTokens = 0, notice?: (message: string) => void): Promise<boolean> {
+  const cfg = getConfig();
+  const reserve = Math.min(cfg.maxTokens, Math.max(1024, Math.floor(cfg.contextWindow * 0.15)));
+  const fits = () => Math.ceil((estimateTokens(history) + extraTokens) * 1.15) + reserve + 512 <= cfg.contextWindow;
+  if (fits()) return true;
+  if (!cfg.autoCompact) return false;
+  // Preserve message roles and tool-call pairing while retiring verbose evidence.
+  let pruned = false;
+  for (const m of history) {
+    if (typeof m.content !== "string" || m.content.length <= 1200) continue;
+    if (m.role === "tool" || (m.role === "user" && m.content.startsWith("<tool_response"))) {
+      m.content = m.content.slice(0, 1000) + "\n[Earlier tool output shortened to fit context. Read targeted excerpts again if needed.]";
+      pruned = true;
+      if (fits()) break;
+    }
+  }
+  if (pruned) notice?.("Shortened earlier tool output to preserve context space.");
+  if (fits()) return true;
+  // Only summarize earlier turns. Never discard the current user request and
+  // its tool-call sequence simply because it is large.
+  let latest = -1;
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i]!;
+    if (m.role === "user" && typeof m.content === "string" && !m.content.startsWith("<tool_response") && !m.content.startsWith("[automatic notice")) latest = i;
+  }
+  if (latest > 1) {
+    const summary = await summarizeConversation(history.slice(0, latest));
+    const systems = history.slice(0, latest).filter(m => m.role === "system");
+    history.splice(0, latest, ...systems, { role: "user", content: `[Earlier conversation summary]\n${summary}` });
+    notice?.("Compacted earlier conversation before the next model request.");
+  }
+  return fits();
+}
+
 export async function summarizeConversation(messages: ChatCompletionMessageParam[]): Promise<string> {
   const cfg = getConfig();
   const client = getClient();
-  const transcript = messages
+  let transcript = messages
     .filter(m => m.role !== "system")
     .map(m => {
       let content = typeof m.content === "string" ? m.content : "";
@@ -1477,6 +1517,12 @@ export async function summarizeConversation(messages: ChatCompletionMessageParam
       return `${m.role}: ${content}`;
     })
     .join("\n\n");
+
+  const transcriptLimit = Math.max(256, Math.floor((cfg.contextWindow - 2048) * 2));
+  if (transcript.length > transcriptLimit) {
+    const half = Math.floor(transcriptLimit / 2);
+    transcript = transcript.slice(0, half) + "\n[Middle of transcript omitted to fit summarization budget.]\n" + transcript.slice(-half);
+  }
 
   const res = await client.chat.completions.create({
     model: cfg.model,

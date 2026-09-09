@@ -8,9 +8,10 @@ import { App } from "./src/ui/App";
 import { chat } from "./src/llm";
 import { systemPrompt } from "./src/prompt";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import packageInfo from "./package.json";
 
 function parseArgs(argv: string[]) {
-  const opts: { model?: string; baseUrl?: string; prompt?: string; help?: boolean; resume?: boolean } = {};
+  const opts: { model?: string; baseUrl?: string; prompt?: string; help?: boolean; resume?: boolean; version?: boolean } = {};
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -20,6 +21,7 @@ function parseArgs(argv: string[]) {
     else if (a === "--prompt" || a === "-p") opts.prompt = argv[++i];
     else if (a === "--continue" || a === "-c" || a === "--resume") opts.resume = true;
     else if (a === "--help" || a === "-h") opts.help = true;
+    else if (a === "--version" || a === "-v") opts.version = true;
     else rest.push(a);
   }
   if (!opts.prompt && rest.length > 0) {
@@ -48,6 +50,7 @@ ${chalk.bold("Options:")}
   -p, --prompt <text>      One-shot prompt (non-interactive)
   -c, --continue           Resume the most recent session for this folder
   -h, --help               Show this help
+  -v, --version            Show version and source entry point
 
 ${chalk.bold("In the TUI:")} shift+tab = plan mode · /model = pick model · /resume = sessions
                 /compact = shrink context · /init = generate project context
@@ -82,6 +85,7 @@ async function oneShot(prompt: string) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.version) { console.log(`ccli ${packageInfo.version}\nSource: ${import.meta.path}\nWorkspace: ${process.cwd()}`); return; }
   if (opts.help) { printHelp(); return; }
 
   if (opts.model) saveConfig({ model: opts.model });

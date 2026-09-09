@@ -5,7 +5,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "read_file",
-      description: "Read the contents of a file. Returns the file content with line numbers.",
+      description: "Read a bounded page with line numbers (default 200 lines, maximum 1000 lines and 16 KiB). Follow the returned offset to continue. Explicit paths can read ignored files. Never treat a truncated line as complete edit text.",
       parameters: {
         type: "object",
         properties: {
@@ -59,6 +59,8 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
         properties: {
           pattern: { type: "string", description: "Glob pattern (e.g. 'src/**/*.ts', '*.json')" },
           cwd: { type: "string", description: "Directory to search in (defaults to current working directory)" },
+          include_ignored: { type: "boolean", description: "Include generated and ignored paths only when needed (default false)" },
+          offset: { type: "number", description: "Zero-based result offset; pages contain up to 200 paths" },
         },
         required: ["pattern"],
       },
@@ -77,6 +79,7 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
           glob: { type: "string", description: "Glob filter for file types (e.g. '*.ts')" },
           case_insensitive: { type: "boolean", description: "Case-insensitive search" },
           context: { type: "number", description: "Lines of context around each match" },
+          include_ignored: { type: "boolean", description: "Search ignored paths when needed (default false). Explicit file paths bypass ignores." },
         },
         required: ["pattern"],
       },
@@ -91,6 +94,8 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
         type: "object",
         properties: {
           path: { type: "string", description: "Directory path to list (defaults to cwd)" },
+          include_ignored: { type: "boolean", description: "Show ignored entries (default false)" },
+          offset: { type: "number", description: "Zero-based result offset; pages contain up to 200 entries" },
         },
         required: [],
       },

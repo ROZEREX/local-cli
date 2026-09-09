@@ -161,6 +161,87 @@ bun run start
 
 ## Usage
 
+### Run the current checkout with `ccli` (Windows CMD)
+
+Register this checkout once, or refresh an old global installation:
+
+```cmd
+cd /d C:\MAMP\htdocs\local-cli
+bun install
+bun link
+```
+
+Then open CMD in the project you want the agent to work on:
+
+```cmd
+cd /d C:\path\to\your-project
+ccli
+```
+
+The launch folder is the agent's workspace. `ccli` and `local-cli` are aliases.
+`bun link` connects them to this source checkout, so subsequent source updates
+are used on the next launch; exit and reopen an already-running session.
+After dependency changes, run `bun install` in the CLI checkout.
+
+```cmd
+where ccli
+ccli --version
+ccli --help
+ccli -c
+ccli -m qwen3:latest
+ccli -p "Explain this project"
+```
+
+`--version` prints the version, source entry point, and launch folder. If another
+installation comes first in `where ccli`, its PATH entry takes precedence.
+One-shot mode (`-p`) auto-approves tools; plain `ccli` opens the interactive UI.
+
+### Keep generated and oversized files out of context
+
+Automatic discovery, search, indexing, and folder attachments share exclusion
+rules: built-in dependency/build exclusions, `.gitignore`, then
+`.localcliignore` at each directory level. Nested rule files are supported.
+These are AI discovery rules, including for tracked files; they do not alter Git.
+
+Create `.localcliignore` in your project's root for additional exclusions:
+
+```gitignore
+# Custom generated files, exports, and logs
+public/generated/
+data/exports/
+*.log
+
+# Keep this particular log discoverable
+!examples/sample.log
+```
+
+Patterns use Git ignore syntax. To re-include a file inside an ignored folder,
+re-include its parent folders too. Common directories such as `node_modules`,
+`vendor`, `build`, `dist`, `.next`, and `coverage` are excluded by default.
+Rule changes take effect on the next scan. Explicit file reads and attachments
+can access ignored files; the agent can also set `include_ignored` on discovery
+tools when investigating generated output.
+
+Reads default to 200 lines, with a maximum of 1000 lines and approximately
+16 KiB per result. The returned offset continues the next page. Huge lines are
+marked incomplete. Search streams file content and limits output to 100 matches
+or approximately 16 KiB; it scans at most 128 MiB and 16384 bytes per line,
+reporting those limits when reached. Directory/path results are paginated.
+Workspace discovery scans at most 20000 entries; narrow the directory for
+larger trees. Symlinked entries are not recursively discovered.
+
+Folder and `@file` attachments share a 16 KiB output budget, select at most 100
+files, and skip files larger than 100 KiB with a notice. Use targeted file reads
+and searches for larger inputs. Project instruction files are also bounded.
+The source-code index refreshes changed/deleted files on search and reuses
+unchanged file analysis. Embeddings are regenerated after index changes.
+
+The agent starts project explanations from the README, manifests, entry points,
+and representative modules. With `autoCompact` enabled, it shortens verbose tool
+output and summarizes earlier turns when necessary before another model call.
+If the current request still cannot fit, it stops with an explanation. Token
+budgeting uses an estimate with headroom, not an exact model tokenizer.
+
 ```bash
 # interactive REPL
 bun run start

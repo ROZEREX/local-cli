@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
+import { readPage } from "./workspace";
 
 // Files we treat as project memory, in priority order. The first one found in
 // the working directory is loaded into the system prompt so the agent starts
@@ -16,7 +17,7 @@ export function findProjectContext(cwd: string): ProjectContext | null {
     const fp = join(cwd, rel);
     if (existsSync(fp)) {
       try {
-        const content = readFileSync(fp, "utf-8").trim();
+        const content = readPage(fp, 1, 200).replace(/^\d+\t/gm, "").trim();
         if (content) return { file: rel, content };
       } catch {
         /* unreadable — try the next candidate */

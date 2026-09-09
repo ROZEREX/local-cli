@@ -23,7 +23,7 @@ import {
   StatusBar, PermissionPrompt, SelectList, PlanApproval, PromptInput, FileBrowser, ChatBrowser,
   GeneratingLine, type ToolView, type StatusState,
 } from "./components";
-import { expandSelection, readFilesAsContext } from "../files";
+import { expandSelection, readFilesAsContext, expandFileMentions } from "../files";
 import { clearSessionTodos } from "../todos";
 import { learnProfileInstruction, profileFilePath, listProfileNames, setActiveProfile, getActiveProfileName } from "../profile";
 import { stopAllServers } from "../proc";
@@ -190,17 +190,7 @@ function computeDiff(name: string, args: any, cwd: string): DiffView | undefined
   return undefined;
 }
 
-function expandMentions(input: string, cwd: string): string {
-  const mentions = [...input.matchAll(/@(\S+)/g)].map(m => m[1]).filter((x): x is string => !!x);
-  const blocks: string[] = [];
-  for (const m of mentions) {
-    const fp = resolve(cwd, m);
-    if (existsSync(fp) && statSync(fp).isFile()) {
-      try { blocks.push(`\n\n--- ${m} ---\n${readFileSync(fp, "utf-8")}\n--- end ${m} ---`); } catch {}
-    }
-  }
-  return blocks.length ? input + blocks.join("") : input;
-}
+const expandMentions = expandFileMentions;
 
 // Rebuild a pretty transcript from raw history when resuming a session.
 function rebuildTranscript(history: ChatCompletionMessageParam[]): ItemInput[] {
@@ -700,7 +690,7 @@ export function App({ autoResume = false }: AppProps) {
   const addPaths = (rawPaths: string[]) => {
     const cwd = getConfig().cwd;
     const abs = rawPaths.map(p => resolve(cwd, p));
-    const files = expandSelection(abs);
+    const files = expandSelection(abs, getConfig().cwd);
     if (files.length === 0) { commit({ kind: "system", text: "No readable files selected.", tone: "error" }); return; }
     const { block, included, skipped, truncated } = readFilesAsContext(files, cwd);
     if (!included.length) { commit({ kind: "system", text: "Nothing readable to add (binary/too large).", tone: "error" }); return; }

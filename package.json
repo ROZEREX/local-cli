@@ -1,6 +1,6 @@
 {
   "name": "local-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "module": "index.ts",
   "type": "module",
   "bin": {
@@ -10,9 +10,10 @@
   "scripts": {
     "start": "bun run index.ts",
     "web": "bun run ui-web/server.ts",
-    "test": "bun run test-tools.ts && bun run test-roadmap-features.ts && bun run test-think.ts && bun run test-llm-loop.ts && bun run test-native-fallback.ts && bun run test-tool-parse-fallback.ts && bun run test-leaked-toolcall.ts && bun run test-narration.ts && bun run test-stream-guards.ts && bun run test-ask-user.ts && bun run test-features.ts && bun run test-workflow-features.ts && bun run test-prompted.ts && bun run test-edit.ts && bun run test-diff.ts && bun run test-highlight.ts && bun run test-files.ts && bun run test-usage.ts && bun run test-status-vram.ts && bun run test-vllm.ts && bun run test-backend-switch.ts && bun run test-thinking.ts && bun run test-parallel.ts && bun run test-profile.ts && bun run test-servers.ts && bun run test-server-logs-ansi.ts && bun run test-ports.ts && bun run test-browser-vision.ts && bun run test-extension.ts && bun run test-allow.ts && bun run test-incognito.ts && bun run test-chat-mode.ts && bun run test-imagegen.ts && bun run test-vram-swap.ts && bun run test-stall.ts && bun run test-empty-retry.ts && bun run test-abort-retry.ts && bun run test-iteration-limit.ts && bun run test-watchdog-ps.ts && bun run test-tool-message-format.ts && bun run test-input.tsx && bun run test-slashmenu.tsx && bun run test-files-ui.tsx && bun run test-chats-ui.tsx && bun run test-ui-render.tsx && bun run test-ui-flow.tsx && bun run test-ui-features.tsx",
+    "test": "bun run test-context-limits.ts && bun run test-tools.ts && bun run test-roadmap-features.ts && bun run test-think.ts && bun run test-llm-loop.ts && bun run test-native-fallback.ts && bun run test-tool-parse-fallback.ts && bun run test-leaked-toolcall.ts && bun run test-narration.ts && bun run test-stream-guards.ts && bun run test-ask-user.ts && bun run test-features.ts && bun run test-workflow-features.ts && bun run test-prompted.ts && bun run test-edit.ts && bun run test-diff.ts && bun run test-highlight.ts && bun run test-files.ts && bun run test-usage.ts && bun run test-status-vram.ts && bun run test-vllm.ts && bun run test-backend-switch.ts && bun run test-thinking.ts && bun run test-parallel.ts && bun run test-profile.ts && bun run test-servers.ts && bun run test-server-logs-ansi.ts && bun run test-ports.ts && bun run test-browser-vision.ts && bun run test-extension.ts && bun run test-allow.ts && bun run test-incognito.ts && bun run test-chat-mode.ts && bun run test-imagegen.ts && bun run test-vram-swap.ts && bun run test-stall.ts && bun run test-empty-retry.ts && bun run test-abort-retry.ts && bun run test-iteration-limit.ts && bun run test-watchdog-ps.ts && bun run test-tool-message-format.ts && bun run test-input.tsx && bun run test-slashmenu.tsx && bun run test-files-ui.tsx && bun run test-chats-ui.tsx && bun run test-ui-render.tsx && bun run test-ui-flow.tsx && bun run test-ui-features.tsx",
     "test:live": "bun run test-deepseek-live.ts",
-    "typecheck": "tsc --noEmit --skipLibCheck"
+    "typecheck": "tsc --noEmit --skipLibCheck",
+    "test:context": "bun run test-context-limits.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -25,6 +26,7 @@
   "dependencies": {
     "chalk": "5",
     "glob": "^13.0.6",
+    "ignore": "^7.0.9",
     "ink": "^7.0.5",
     "ink-big-text": "^2.0.0",
     "ink-gradient": "^4.0.1",

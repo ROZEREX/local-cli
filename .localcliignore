@@ -1,0 +1,3 @@
+# Extra exclusions for AI discovery, search, indexing and folder attachments.
+# .gitignore and default dependency/build exclusions are also applied.
+*.log

@@ -1,6 +1,6 @@
 import { getConfig } from "./config";
 import { listOllamaModelsDetailed, modelCapabilities, isOllama } from "./ollama";
-import { buildIndex, loadIndex, saveIndex, type WorkspaceIndex, type CodeChunk } from "./indexer";
+import { buildIndex, saveIndex, type WorkspaceIndex, type CodeChunk } from "./indexer";
 
 // Semantic code search over the workspace index. Uses a local Ollama embedding
 // model when one is installed (nomic-embed-text, mxbai-embed-large, bge-m3,
@@ -63,8 +63,7 @@ function cosine(a: number[], b: number[]): number {
 
 // Make sure an index exists; optionally attach embeddings to it.
 export async function ensureIndex(opts: { rebuild?: boolean; withEmbeddings?: boolean } = {}): Promise<WorkspaceIndex> {
-  let idx = opts.rebuild ? null : loadIndex();
-  if (!idx) idx = await buildIndex();
+  let idx = await buildIndex(opts.rebuild);
   if (opts.withEmbeddings !== false && !idx.embeddings && idx.chunks.length > 0) {
     const model = await findEmbeddingModel();
     if (model) {
@@ -115,6 +114,7 @@ export interface SearchHit {
 }
 
 export async function searchCode(query: string, k = 8): Promise<{ hits: SearchHit[]; via: string }> {
+  k = Number.isFinite(k) ? Math.min(20, Math.max(1, Math.floor(k))) : 8;
   const idx = await ensureIndex();
   const hits: SearchHit[] = [];
   const qWords = words(query).filter(w => !STOPWORDS.has(w));

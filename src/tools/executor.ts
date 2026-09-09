@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync, realpathSync } from "fs";
 import { resolve, join, dirname, relative, isAbsolute, sep } from "path";
-import { glob } from "glob";
+import { minimatch } from "minimatch";
+import { boundedText, readPage, scanWorkspace, workspacePolicy, pageEntries, textLines } from "../workspace";
 import { spawnSync } from "child_process";
 import { getConfig } from "../config";
 import { startServer, serverLogs, stopServer, listServers, getServer, waitForStartup } from "../proc";
@@ -111,13 +112,7 @@ export function readFile(args: { path: string; offset?: number; limit?: number }
   if (!existsSync(fp)) return `Error: File not found: ${fp}.${pathHint(fp)}`;
   if (statSync(fp).isDirectory()) return `Error: Path is a directory, not a file: ${fp}`;
   try {
-    const lines = readFileSync(fp, "utf-8").split("\n");
-    const start = args.offset ? Math.max(0, args.offset - 1) : 0;
-    const end = args.limit ? start + args.limit : lines.length;
-    return lines
-      .slice(start, end)
-      .map((l, i) => `${start + i + 1}\t${l}`)
-      .join("\n");
+    return readPage(fp, args.offset, args.limit);
   } catch (e: any) {
     return `Error reading file: ${e.message}`;
   }
@@ -308,7 +303,7 @@ export function editFile(args: { path: string; old_string: string; new_string: s
 }
 
 // ─── glob_files ───────────────────────────────────────────────────────────────
-export async function globFiles(args: { pattern?: string; cwd?: string }): Promise<string> {
+export async function globFiles(args: { pattern?: string; cwd?: string; include_ignored?: boolean; offset?: number }): Promise<string> {
   if (!args.pattern || typeof args.pattern !== "string") {
     return `Error: glob_files needs a "pattern" argument — a glob like "**/*.js", "src/**/*.ts", or "*.json". ` +
       `(To list a folder's contents instead, use list_dir.)`;
@@ -316,13 +311,11 @@ export async function globFiles(args: { pattern?: string; cwd?: string }): Promi
   assertWorkspaceGlob(args.pattern);
   const cwd = args.cwd ? resolvePath(args.cwd) : getConfig().cwd;
   try {
-    const matches = await glob(args.pattern, {
-      cwd,
-      nodir: false,
-      ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**", "**/build/**"]
-    });
+    const scan = scanWorkspace(getConfig().cwd, cwd, args.include_ignored);
+    const matches = scan.paths.map(p => relative(cwd, p).replace(/\\/g, "/")).filter(p => minimatch(p, args.pattern!, { dot: true })).sort();
     if (matches.length === 0) return "No files matched.";
-    return matches.sort().join("\n");
+    const start = Math.max(0, Math.floor(args.offset || 0));
+    return pageEntries(matches, start) + (scan.truncated ? "\n[Workspace scan limited to 20000 entries; narrow cwd.]" : "");
   } catch (e: any) {
     return `Error: ${e.message}`;
   }
@@ -335,6 +328,7 @@ export async function grepFiles(args: {
   glob?: string;
   case_insensitive?: boolean;
   context?: number;
+  include_ignored?: boolean;
 }): Promise<string> {
   const searchPath = args.path ? resolvePath(args.path) : getConfig().cwd;
   if (args.glob) assertWorkspaceGlob(args.glob);
@@ -353,50 +347,54 @@ export async function grepFiles(args: {
     files = [searchPath];
   } else {
     const pattern = args.glob || "**/*";
-    files = await glob(pattern, {
-      cwd: searchPath,
-      nodir: true,
-      absolute: true,
-      ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**", "**/build/**"]
-    });
+    files = scanWorkspace(getConfig().cwd, searchPath, args.include_ignored).paths.filter(p => statSync(p).isFile() && minimatch(relative(searchPath, p).replace(/\\/g, "/"), pattern, { dot: true }));
   }
 
   const results: string[] = [];
-  const ctx = args.context ?? 0;
-
-  for (const file of files) {
-    let content: string;
-    try { content = readFileSync(file, "utf-8"); } catch { continue; }
-    const lines = content.split("\n");
-    const matched: number[] = [];
-    lines.forEach((line, i) => { if (re.test(line)) matched.push(i); re.lastIndex = 0; });
-    if (matched.length === 0) continue;
-
-    const shown = new Set<number>();
-    matched.forEach(i => {
-      for (let j = Math.max(0, i - ctx); j <= Math.min(lines.length - 1, i + ctx); j++) shown.add(j);
-    });
-
-    const relPath = relative(getConfig().cwd, file);
-    const block = Array.from(shown).sort((a, b) => a - b).map(i =>
-      `${relPath}:${i + 1}${matched.includes(i) ? ":" : "-"}${lines[i]}`
-    ).join("\n");
-    results.push(block);
+  const ctx = Math.min(10, Math.max(0, Math.floor(args.context || 0)));
+  const budget = { remaining: 128 * 1024 * 1024, limited: false, binary: false, longLines: false };
+  let matches = 0, bytes = 0, outputLimited = false;
+  outer: for (const file of files) {
+    const before: { line: number; text: string }[] = [];
+    let after = 0, lastShown = 0;
+    try {
+      resolvePath(file); // validate explicit paths and real-path ancestors
+      for (const row of textLines(file, budget)) {
+        re.lastIndex = 0;
+        const match = re.test(row.text);
+        const show = (r: { line: number; text: string }, hit: boolean) => {
+          if (r.line <= lastShown) return;
+          const text = relative(getConfig().cwd, file) + ":" + r.line + (hit ? ":" : "-") + r.text;
+          results.push(text); bytes += Buffer.byteLength(text) + 1; lastShown = r.line;
+        };
+        if (match) {
+          for (const previous of before) show(previous, false);
+          show(row, true); matches++; after = ctx;
+        } else if (after > 0) { show(row, false); after--; }
+        before.push(row);
+        if (before.length > ctx) before.shift();
+        if (matches >= 100 || bytes >= 12000) { outputLimited = true; break outer; }
+      }
+    } catch { continue; }
+    if (budget.limited) break;
   }
-
-  if (results.length === 0) return "No matches found.";
-  return results.join("\n---\n");
+  const notices = ["Discovery is limited to 20000 entries; narrow path for larger trees."];
+  if (outputLimited) notices.push("Result limit reached; narrow path, glob, or pattern.");
+  if (budget.limited) notices.push("128 MiB search scan limit reached; narrow the input.");
+  if (budget.binary) notices.push("Binary content skipped.");
+  if (budget.longLines) notices.push("Only the first 16384 bytes of long lines were searched; use a streaming shell query for the rest.");
+  return boundedText((results.length ? results.join("\n") : "No matches found.") + "\n[" + notices.join(" ") + "]");
 }
 
 // ─── list_dir ─────────────────────────────────────────────────────────────────
-export function listDir(args: { path?: string }): string {
+export function listDir(args: { path?: string; include_ignored?: boolean; offset?: number }): string {
   const dir = args.path ? resolvePath(args.path) : getConfig().cwd;
   if (!existsSync(dir)) return `Error: Directory not found: ${dir}`;
   try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    return entries
-      .map(e => `${e.isDirectory() ? "d" : "f"} ${e.name}`)
-      .join("\n") || "(empty)";
+    const excluded = workspacePolicy(getConfig().cwd);
+    const entries = readdirSync(dir, { withFileTypes: true }).filter(e => args.include_ignored || !excluded(join(dir, e.name), e.isDirectory())).sort((a, b) => a.name.localeCompare(b.name));
+    const start = Math.max(0, Math.floor(args.offset || 0));
+    return pageEntries(entries.map(e => `${e.isDirectory() ? "d" : "f"} ${e.name}`), start) || "(empty; ignored entries hidden)";
   } catch (e: any) {
     return `Error: ${e.message}`;
   }

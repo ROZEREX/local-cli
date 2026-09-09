@@ -499,7 +499,7 @@ function addContextPaths(ws: ServerWebSocket<WSData>, paths: string[]): string {
     try { safe.push(resolveWorkspacePath(String(path))); }
     catch { /* Report the aggregate result below without exposing other paths. */ }
   }
-  const files = expandSelection(safe);
+  const files = expandSelection(safe, getConfig().cwd);
   const res = readFilesAsContext(files, getConfig().cwd);
   if (!res.included.length) return "No readable files inside the active workspace were selected.";
   ws.data.history.push({ role: "user", content: `I'm attaching these files for context:\n\n${res.block}` });

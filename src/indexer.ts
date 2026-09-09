@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join, dirname, relative } from "path";
-import { glob } from "glob";
 import { getConfig } from "./config";
 import { isIncognito } from "./incognito";
+import { scanWorkspace } from "./workspace";
+import { minimatch } from "minimatch";
 
 // Workspace indexing: scan the project once, extract symbols (functions,
 // classes, endpoints, components) and text chunks, and persist the result to
@@ -25,6 +26,9 @@ export interface CodeChunk {
 }
 
 export interface WorkspaceIndex {
+  version?: number;
+  stamps?: Record<string, string>;
+  scanTruncated?: boolean;
   builtAt: number;
   cwd: string;
   fileCount: number;
@@ -37,7 +41,6 @@ export interface WorkspaceIndex {
 }
 
 const SOURCE_GLOB = "**/*.{ts,tsx,js,jsx,mjs,cjs,php,py,rb,go,rs,java,cs,vue,svelte}";
-const IGNORE = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/.next/**", "**/build/**", "**/vendor/**", "**/.local-cli/**", "**/*.min.js", "**/coverage/**"];
 const MAX_FILE_BYTES = 400 * 1024;
 const CHUNK_LINES = 40;
 const CHUNK_STRIDE = 32;
@@ -105,12 +108,12 @@ function extractSymbols(file: string, content: string): CodeSymbol[] {
 function chunkFile(file: string, content: string): CodeChunk[] {
   const lines = content.split("\n");
   if (lines.length <= CHUNK_LINES) {
-    const text = content.trim();
+    const text = content.trim().slice(0, 4000);
     return text ? [{ file, startLine: 1, text }] : [];
   }
   const chunks: CodeChunk[] = [];
   for (let start = 0; start < lines.length; start += CHUNK_STRIDE) {
-    const slice = lines.slice(start, start + CHUNK_LINES).join("\n").trim();
+    const slice = lines.slice(start, start + CHUNK_LINES).join("\n").trim().slice(0, 4000);
     if (slice) chunks.push({ file, startLine: start + 1, text: slice });
     if (start + CHUNK_LINES >= lines.length) break;
   }
@@ -119,25 +122,41 @@ function chunkFile(file: string, content: string): CodeChunk[] {
 
 // Build (or rebuild) the workspace index. Pure scan — embeddings are attached
 // by search.ts when a model is available.
-export async function buildIndex(): Promise<WorkspaceIndex> {
+export async function buildIndex(force = false): Promise<WorkspaceIndex> {
   const cwd = getConfig().cwd;
-  const files = await glob(SOURCE_GLOB, { cwd, nodir: true, absolute: true, ignore: IGNORE });
+  const scan = scanWorkspace(cwd);
+  const files = scan.paths.filter(p => minimatch(relative(cwd, p).replace(/\\/g, "/"), SOURCE_GLOB) && statSync(p).isFile());
+  const previous = force ? null : loadIndex();
+  const stamps: Record<string, string> = {};
+  for (const abs of files) {
+    try {
+      const st = statSync(abs);
+      if (st.size <= MAX_FILE_BYTES) stamps[relative(cwd, abs).replace(/\\/g, "/")] = `${st.mtimeMs}:${st.ctimeMs}:${st.size}`;
+    } catch {}
+  }
+  if (previous?.version === 2 && JSON.stringify(previous.stamps) === JSON.stringify(stamps) && previous.scanTruncated === scan.truncated) return previous;
   const symbols: CodeSymbol[] = [];
   const chunks: CodeChunk[] = [];
 
   for (const abs of files) {
+    const rel = relative(cwd, abs).replace(/\\/g, "/");
+    if (!stamps[rel]) continue;
+    if (previous?.version === 2 && previous.chunks.length < MAX_CHUNKS && previous.stamps?.[rel] === stamps[rel]) {
+      symbols.push(...previous.symbols.filter(s => s.file === rel));
+      chunks.push(...previous.chunks.filter(c => c.file === rel).slice(0, Math.max(0, MAX_CHUNKS - chunks.length)));
+      continue;
+    }
     let content: string;
     try {
       if (statSync(abs).size > MAX_FILE_BYTES) continue;
       content = readFileSync(abs, "utf-8");
     } catch { continue; }
-    const rel = relative(cwd, abs).replace(/\\/g, "/");
     symbols.push(...extractSymbols(rel, content));
     if (chunks.length < MAX_CHUNKS) chunks.push(...chunkFile(rel, content));
   }
   if (chunks.length > MAX_CHUNKS) chunks.length = MAX_CHUNKS;
 
-  const index: WorkspaceIndex = { builtAt: Date.now(), cwd, fileCount: files.length, symbols, chunks };
+  const index: WorkspaceIndex = { version: 2, stamps, scanTruncated: scan.truncated, builtAt: Date.now(), cwd, fileCount: Object.keys(stamps).length, symbols, chunks };
   saveIndex(index);
   return index;
 }
@@ -173,5 +192,5 @@ export function describeIndex(idx: WorkspaceIndex): string {
   const age = Math.round((Date.now() - idx.builtAt) / 60000);
   return `Workspace index: ${idx.fileCount} files, ${idx.symbols.length} symbols (${kinds || "none"}), ${idx.chunks.length} chunks` +
     (idx.embeddings ? `, embeddings via ${idx.embedModel}` : ", no embeddings (keyword search)") +
-    ` — built ${age < 1 ? "just now" : `${age} min ago`}. Rebuild with /index.`;
+    ` — built ${age < 1 ? "just now" : `${age} min ago`}. Refreshes on search; /index checks for changes.` + (idx.scanTruncated ? " Scan limited to 20000 entries." : "");
 }

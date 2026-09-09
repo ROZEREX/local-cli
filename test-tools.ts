@@ -25,7 +25,7 @@ const run = async () => {
 
   // read_file with offset/limit
   r = await executeTool("read_file", { path: "hello.txt", offset: 2, limit: 1 });
-  check("read_file offset+limit", r.trim() === "2\tline2", JSON.stringify(r));
+  check("read_file offset+limit", r.startsWith("2\tline2\n") && r.includes("offset=3"), JSON.stringify(r));
 
   // edit_file unique
   r = await executeTool("edit_file", { path: "hello.txt", old_string: "line2", new_string: "EDITED" });
