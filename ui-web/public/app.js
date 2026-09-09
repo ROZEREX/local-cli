@@ -5,10 +5,20 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
+let bootToken = "";
+let connectionEpoch = 0;
+let reconnectTimer = null;
+const CLIENT_ID_KEY = "local-cli-web-client-id";
+let clientId;
+try {
+  clientId = sessionStorage.getItem(CLIENT_ID_KEY);
+  if (!clientId) { clientId = crypto.randomUUID(); sessionStorage.setItem(CLIENT_ID_KEY, clientId); }
+} catch { clientId = crypto.randomUUID(); }
+
 // Safe JSON fetch: returns fallback so wrong-version/stale server won't crash UI.
 async function getJSON(url, fallback = null) {
   try {
-    const r = await fetch(url);
+    const r = await fetch(url, { headers: bootToken ? { "X-Local-CLI-Token": bootToken } : {} });
     if (!r.ok) return fallback;
     const ct = r.headers.get("content-type") || "";
     if (!ct.includes("json")) return fallback;
@@ -27,33 +37,64 @@ let liveStart = 0, liveTimer = null, liveTokens = 0;
 // memory), "prefill" (reading the prompt), "thinking", "writing", "tool".
 let livePhase = null, liveToolName = "", liveThinking = false;
 let liveBadgeTimer = null, autoSwitched = false, liveViewOn = false;
-let state = { model: "", cwd: "", contextWindow: 0, thinking: true, packageManager: "auto", activeProfile: null, profiles: [], availablePM: [] };
+let state = { model: "", cwd: "", contextWindow: 0, thinking: true, reasoningSource: "local_model_trace", packageManager: "auto", activeProfile: null, profiles: [], availablePM: [] };
 let mode = "normal";
 let browserBusy = false;
 let incognito = { on: false, since: null };
 let backendWarning = "";
+let bubbleSeq = 0;
+let activeRun = null;
+const receivedRunSeq = new Map();
 
 // ── markdown ──
-const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const escAttr = esc;
+
+function safeMarkdownUrl(raw) {
+  try {
+    const url = new URL(String(raw), location.href);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch { return null; }
+}
+
+function renderPlainInline(text) {
+  return esc(text)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+}
+
+function renderInline(text) {
+  const token = /`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)/g;
+  let html = "", cursor = 0, match;
+  while ((match = token.exec(text))) {
+    html += renderPlainInline(text.slice(cursor, match.index));
+    if (match[1] != null) html += `<code class="inline">${esc(match[1])}</code>`;
+    else {
+      const href = safeMarkdownUrl(match[3]);
+      html += href
+        ? `<a href="${escAttr(href)}" target="_blank" rel="noopener noreferrer">${renderPlainInline(match[2])}</a>`
+        : renderPlainInline(match[2]);
+    }
+    cursor = token.lastIndex;
+  }
+  return html + renderPlainInline(text.slice(cursor));
+}
+
 function md(src) {
+  src = String(src ?? "");
   const blocks = [];
   src = src.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, l, code) => { blocks.push(`<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre>`); return `  ${blocks.length - 1}  `; });
-  const inline = (t) => esc(t)
-    .replace(/`([^`]+)`/g, '<code class="inline">$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
   let html = "", list = null;
   const close = () => { if (list) { html += `</${list}>`; list = null; } };
   for (const raw of src.split("\n")) {
     const ph = raw.match(/^  (\d+)  $/);
     if (ph) { close(); html += blocks[+ph[1]]; continue; }
     let m;
-    if ((m = raw.match(/^(#{1,3})\s+(.*)$/))) { close(); html += `<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`; }
-    else if ((m = raw.match(/^\s*[-*]\s+(.*)$/))) { if (list !== "ul") { close(); list = "ul"; html += "<ul>"; } html += `<li>${inline(m[1])}</li>`; }
-    else if ((m = raw.match(/^\s*\d+\.\s+(.*)$/))) { if (list !== "ol") { close(); list = "ol"; html += "<ol>"; } html += `<li>${inline(m[1])}</li>`; }
+    if ((m = raw.match(/^(#{1,3})\s+(.*)$/))) { close(); html += `<h${m[1].length}>${renderInline(m[2])}</h${m[1].length}>`; }
+    else if ((m = raw.match(/^\s*[-*]\s+(.*)$/))) { if (list !== "ul") { close(); list = "ul"; html += "<ul>"; } html += `<li>${renderInline(m[1])}</li>`; }
+    else if ((m = raw.match(/^\s*\d+\.\s+(.*)$/))) { if (list !== "ol") { close(); list = "ol"; html += "<ol>"; } html += `<li>${renderInline(m[1])}</li>`; }
     else if (raw.trim() === "") close();
-    else { close(); html += `<p>${inline(raw)}</p>`; }
+    else { close(); html += `<p>${renderInline(raw)}</p>`; }
   }
   close();
   return html;
@@ -65,6 +106,7 @@ const relTime = (t) => { const s = (Date.now() - t) / 1000; if (s < 60) return "
 
 // ── message bubbles ──
 function bubble(role) {
+  const id = `reasoning-${++bubbleSeq}`;
   const wrap = document.createElement("div");
   wrap.className = "flex gap-3 animate-rise";
   
@@ -75,11 +117,11 @@ function bubble(role) {
   wrap.innerHTML = `${av}<div class="flex-1 min-w-0">
     <div class="text-[11px] text-dim mb-1 font-semibold tracking-wide">${role === "user" ? "you" : "assistant"}</div>
     <div class="think-container hidden">
-      <div class="think-header flex items-center justify-between">
-        <span class="flex items-center gap-1.5"><i data-lucide="brain" class="w-3 h-3 text-zinc-500"></i> Reasoning Process</span>
+      <button type="button" class="think-header flex items-center justify-between" aria-expanded="false" aria-controls="${id}">
+        <span class="flex items-center gap-1.5"><i data-lucide="brain" class="w-3 h-3 text-zinc-500"></i><span class="reasoning-source">Reasoning trace</span><span class="reasoning-time"></span></span>
         <i data-lucide="chevron-down" class="w-3.5 h-3.5 transition-transform duration-200 tr-icon"></i>
-      </div>
-      <div class="think-block hidden"></div>
+      </button>
+      <div id="${id}" class="think-block hidden" role="region"></div>
     </div>
     <div class="prose content"></div>
   </div>`;
@@ -92,6 +134,7 @@ function bubble(role) {
   
   thinkHeader.onclick = () => {
     const isHidden = thinkBlock.classList.toggle("hidden");
+    thinkHeader.setAttribute("aria-expanded", String(!isHidden));
     const icon = $(".think-header i.tr-icon", wrap);
     if (icon) {
       icon.setAttribute("data-lucide", isHidden ? "chevron-down" : "chevron-up");
@@ -100,7 +143,7 @@ function bubble(role) {
   };
 
   icons();
-  return { wrap, thinkContainer, think: thinkBlock, content: $(".content", wrap), text: "", thought: "" };
+  return { wrap, thinkContainer, thinkHeader, think: thinkBlock, content: $(".content", wrap), text: "", thought: "", thoughtStarted: 0 };
 }
 
 function addUser(text, images) {
@@ -109,7 +152,14 @@ function addUser(text, images) {
   if (images && images.length) {
     const row = document.createElement("div");
     row.className = "flex flex-wrap gap-2 mt-2";
-    row.innerHTML = images.map(im => `<img src="data:image/png;base64,${im}" class="max-h-40 rounded-xl border border-edge" />`).join("");
+    images.forEach((im, index) => {
+      if (!/^[a-zA-Z0-9+/]+={0,2}$/.test(im)) return;
+      const image = document.createElement("img");
+      image.src = `data:image/png;base64,${im}`;
+      image.alt = `Attached image ${index + 1}`;
+      image.className = "max-h-40 rounded-xl border border-edge";
+      row.appendChild(image);
+    });
     b.content.appendChild(row);
   }
   scroll();
@@ -120,9 +170,14 @@ function addText(v, think) {
   const stick = atBottom();
   const b = ensureAssistant();
   if (think) {
+    if (!b.thoughtStarted) b.thoughtStarted = Date.now();
     b.thought += v;
     b.think.textContent = b.thought;
     b.thinkContainer.classList.remove("hidden");
+    b.think.classList.remove("hidden");
+    b.thinkHeader.setAttribute("aria-expanded", "true");
+    const source = $(".reasoning-source", b.wrap);
+    if (source) source.textContent = state.reasoningSource === "local_model_trace" ? "Local model reasoning trace" : "Provider reasoning summary";
   } else {
     b.text += v;
     b.content.innerHTML = md(b.text) + '<span class="caret"></span>';
@@ -130,7 +185,15 @@ function addText(v, think) {
   if (stick) scroll();
 }
 
-function finishStreaming() { $$(".caret").forEach(c => c.remove()); cur = null; }
+function finishStreaming() {
+  $$(".caret").forEach(c => c.remove());
+  if (cur?.thoughtStarted) {
+    const elapsed = Math.max(0, Date.now() - cur.thoughtStarted);
+    const label = $(".reasoning-time", cur.wrap);
+    if (label) label.textContent = ` · ${formatDuration(elapsed)}`;
+  }
+  cur = null;
+}
 
 const TOOL_IC = { 
   read_file: "file-text", write_file: "file-plus", edit_file: "file-pen", 
@@ -147,27 +210,46 @@ const TOOL_IC = {
   search_via_chrome: "globe", generate_image: "image-plus"
 };
 
-function addTool(name, summary) {
+function prettyToolArgs(raw) {
+  try { return JSON.stringify(JSON.parse(raw || "{}"), null, 2); } catch { return String(raw || ""); }
+}
+
+function addTool(name, summary, toolId, args) {
   finishStreaming();
   const stick = atBottom();
   const el = document.createElement("div");
   el.className = "rounded-2xl border border-edge border-l-[3px] border-l-zinc-500 bg-panel animate-pop overflow-hidden";
-  el.innerHTML = `<div class="head flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-panel2 transition">
+  el.dataset.toolId = toolId || "";
+  el.innerHTML = `<button type="button" class="head w-full flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-panel2 transition" aria-expanded="false">
       <i data-lucide="${TOOL_IC[name] ?? "wrench"}" class="w-4 h-4 text-zinc-400 ic"></i>
       <span class="font-mono text-xs font-semibold text-white">${name}</span>
       <span class="font-mono text-[11px] text-dim flex-1 min-w-0 truncate ml-1">${esc(summary || "")}</span>
-      <span class="state"><span class="spin"></span></span></div>
+      <span class="tool-phase text-[11px] text-dim">queued</span><span class="state"><span class="spin"></span></span></button>
     <div class="body hidden px-3 pb-2.5"><pre class="m-0 bg-bg rounded-xl p-2.5 text-[11px] font-mono text-zinc-300 overflow-auto max-h-60 whitespace-pre-wrap border border-edge"></pre></div>`;
   messages.appendChild(el);
-  $(".head", el).onclick = () => $(".body", el).classList.toggle("hidden");
-  pendingTools.push({ name, el });
+  const head = $(".head", el);
+  head.onclick = () => {
+    const hidden = $(".body", el).classList.toggle("hidden");
+    head.setAttribute("aria-expanded", String(!hidden));
+  };
+  const pre = $(".body pre", el);
+  if (args) pre.textContent = `Arguments\n${prettyToolArgs(args)}`;
+  pendingTools.push({ id: toolId, name, el, args: args || "" });
   icons();
   if (stick) scroll();
 }
 
-function fillTool(name, result) {
+function updateToolProgress(m) {
+  const t = m.toolId ? pendingTools.find(tool => tool.id === m.toolId) : pendingTools.findLast?.(tool => tool.name === m.name);
+  if (!t) return;
+  const phase = $(".tool-phase", t.el);
+  if (phase) phase.textContent = m.phase === "running" ? "running" : (m.phase || "preparing");
+  if (m.args) t.args = m.args;
+}
+
+function fillTool(name, result, toolId, durationMs, phaseName) {
   const stick = atBottom();
-  const i = pendingTools.findIndex(t => t.name === name);
+  const i = toolId ? pendingTools.findIndex(t => t.id === toolId) : pendingTools.findIndex(t => t.name === name);
   const t = i >= 0 ? pendingTools.splice(i, 1)[0] : null;
   if (!t) return;
   const err = /^Error|not found|denied|Exit [1-9]|timed out|NOT running/i.test(result);
@@ -176,8 +258,11 @@ function fillTool(name, result) {
   $(".ic", t.el).classList.remove("text-zinc-400");
   $(".ic", t.el).classList.add(err ? "text-danger" : "text-white");
   $(".state", t.el).innerHTML = err ? '<i data-lucide="x" class="w-4 h-4 text-danger"></i>' : '<i data-lucide="check" class="w-4 h-4 text-zinc-400"></i>';
+  const phase = $(".tool-phase", t.el);
+  if (phase) phase.textContent = `${phaseName || (err ? "failed" : "completed")}${Number.isFinite(durationMs) ? ` · ${formatDuration(durationMs)}` : ""}`;
   const pre = $(".body pre", t.el);
-  pre.textContent = (result || "").split("\n").slice(0, 16).join("\n");
+  const argsText = t.args ? `Arguments\n${prettyToolArgs(t.args)}\n\n` : "";
+  pre.textContent = argsText + `Result\n${(result || "").split("\n").slice(0, 40).join("\n")}`;
   $(".body", t.el).classList.remove("hidden");
   icons();
   if (stick) scroll();
@@ -186,19 +271,20 @@ function fillTool(name, result) {
 function addNote(v, kind) {
   const d = document.createElement("div");
   const cls = kind === "error" ? "text-danger bg-red-950/20 border-red-900/30" : "text-dim bg-zinc-900/50 border-edge";
-  d.className = `text-[12px] font-mono rounded-xl border px-3.5 py-2 animate-rise ${cls}`;
+  d.className = `text-[12px] font-mono whitespace-pre-wrap rounded-xl border px-3.5 py-2 animate-rise ${cls}`;
   d.textContent = v; messages.appendChild(d); scroll();
 }
 
 // A generated image, shown inline. Click to open it full size in a new tab.
 function addImage(path, base64) {
   finishStreaming();
+  if (!/^[a-zA-Z0-9+/]+={0,2}$/.test(base64 || "")) { addNote("Generated image payload was invalid.", "error"); return; }
   const src = `data:image/png;base64,${base64}`;
   const d = document.createElement("div");
   d.className = "rounded-2xl border border-edge bg-panel overflow-hidden animate-rise max-w-lg";
-  d.innerHTML = `<img src="${src}" alt="${esc(path)}" class="w-full h-auto block cursor-zoom-in" />
+  d.innerHTML = `<img src="${src}" alt="${escAttr(path)}" class="w-full h-auto block cursor-zoom-in" />
     <div class="px-3.5 py-2 text-[11px] font-mono text-dim border-t border-edge/60 truncate">${esc(path)}</div>`;
-  d.querySelector("img").onclick = () => { const w = window.open(); if (w) w.document.write(`<img src="${src}" style="max-width:100%">`); };
+  d.querySelector("img").onclick = () => window.open(src, "_blank", "noopener,noreferrer");
   messages.appendChild(d); scroll();
 }
 
@@ -222,9 +308,9 @@ function addAsk(m) {
       <div class="opts flex gap-2"></div>`;
     const opts = el.querySelector(".opts");
     opts.append(
-      mkBtn("Allow", "bg-white text-black hover:bg-zinc-200", () => { send({ t: "permission", id: m.id, approved: true }); done("Allowed"); }),
-      mkBtn("Always allow " + m.tool, "border border-zinc-500 text-zinc-300 hover:text-white hover:bg-zinc-900", () => { send({ t: "permission", id: m.id, approved: true, always: true, tool: m.tool }); done("Always allowed"); }),
-      mkBtn("Deny", "border border-edge text-zinc-400 hover:text-danger hover:border-danger hover:bg-zinc-950", () => { send({ t: "permission", id: m.id, approved: false }); done("Denied"); }),
+      mkBtn("Allow", "bg-white text-black hover:bg-zinc-200", () => { send({ t: "permission", id: m.id, callId: m.callId, approved: true }); done("Allowed"); }),
+      mkBtn("Always allow " + m.tool, "border border-zinc-500 text-zinc-300 hover:text-white hover:bg-zinc-900", () => { send({ t: "permission", id: m.id, callId: m.callId, approved: true, always: true }); done("Always allowed"); }),
+      mkBtn("Deny", "border border-edge text-zinc-400 hover:text-danger hover:border-danger hover:bg-zinc-950", () => { send({ t: "permission", id: m.id, callId: m.callId, approved: false }); done("Denied"); }),
     );
   } else {
     el.innerHTML = `<div class="flex items-center gap-2 text-xs font-semibold text-white"><i data-lucide="circle-help" class="w-4 h-4 text-accent"></i><span>${esc(m.question)}</span></div><div class="opts flex flex-wrap gap-2"></div>`;
@@ -235,21 +321,82 @@ function addAsk(m) {
 }
 
 // ── live indicator ──
-function startLive() { busy = true; liveTokens = 0; livePhase = null; liveToolName = ""; liveThinking = false; liveStart = Date.now(); $("#send").classList.add("hidden"); $("#stop").classList.remove("hidden"); liveEl.classList.remove("hidden"); liveEl.classList.add("flex"); liveTimer = setInterval(renderLive, 250); renderLive(); }
-function renderLive() {
-  const s = Math.floor((Date.now() - liveStart) / 1000);
-  if (awaiting) { liveEl.innerHTML = `<span class="text-warn">⏸ awaiting your approval — click <b>Allow</b> or <b>Deny</b> above</span>`; return; }
-  const tok = liveTokens ? ` · ↓${liveTokens.toLocaleString()} tok` : "";
-  const tps = s > 0 && liveTokens ? Math.round(liveTokens / s) : 0;
-  const speed = tps ? ` · ${tps} t/s` : "";
-  if (livePhase === "loading") { liveEl.innerHTML = `<span class="spin"></span> loading the model into memory… · ${s}s <span class="text-dim/70">(cold start — can take a while, especially on first use)</span>`; return; }
-  if (livePhase === "tool") { liveEl.innerHTML = `<span class="spin"></span> running <b class="text-white font-mono">${esc(liveToolName)}</b>… · ${s}s`; return; }
-  if (livePhase === "prefill" && liveTokens === 0) { liveEl.innerHTML = `<span class="spin"></span> reading the prompt… · ${s}s <span class="text-dim/70">(prefill — the model is processing the conversation)</span>`; return; }
-  if (liveTokens === 0) { liveEl.innerHTML = `<span class="spin"></span> waiting for the model… · ${s}s <span class="text-dim/70">(press Stop to cancel)</span>`; return; }
-  if (liveThinking) { liveEl.innerHTML = `<span class="spin"></span> <span class="text-zinc-300">thinking</span>${tok} · ${s}s${speed}`; return; }
-  liveEl.innerHTML = `<span class="spin"></span> writing${tok} · ${s}s${speed}`;
+function formatDuration(ms) {
+  if (!Number.isFinite(ms)) return "—";
+  if (ms < 1_000) return `${Math.max(0, Math.round(ms))}ms`;
+  if (ms < 60_000) return `${(ms / 1_000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+  const min = Math.floor(ms / 60_000), sec = Math.floor((ms % 60_000) / 1_000);
+  return `${min}m ${sec}s`;
 }
-function stopLive() { busy = false; awaiting = false; livePhase = null; clearInterval(liveTimer); liveTimer = null; $("#send").classList.remove("hidden"); $("#stop").classList.add("hidden"); liveEl.classList.add("hidden"); liveEl.classList.remove("flex"); }
+
+const PHASE_LABEL = {
+  loading: "loading model", prefill: "reading prompt", generating: "starting generation",
+  reasoning: "reasoning", answer: "writing answer", tool: "running tool",
+};
+
+function beginRun(m = {}) {
+  const at = Number(m.at) || Date.now();
+  activeRun = {
+    id: m.runId || null, startedAt: at, phase: "prefill", phaseAt: at,
+    durations: {}, heartbeat: "", usage: null, model: m.model || state.model,
+    mode: m.mode || mode, toolCount: 0,
+  };
+}
+
+function setRunPhase(phase, at = Date.now()) {
+  if (!activeRun) beginRun({ at });
+  if (activeRun.phase && activeRun.phase !== phase) {
+    activeRun.durations[activeRun.phase] = (activeRun.durations[activeRun.phase] || 0) + Math.max(0, at - activeRun.phaseAt);
+  }
+  activeRun.phase = phase;
+  activeRun.phaseAt = at;
+  activeRun.heartbeat = "";
+  livePhase = phase;
+  liveThinking = phase === "reasoning";
+  renderLive();
+}
+
+function startLive() {
+  busy = true; liveTokens = 0; liveToolName = ""; liveThinking = false;
+  if (!activeRun) beginRun({ at: Date.now() });
+  liveStart = activeRun.startedAt;
+  $("#send").classList.add("hidden"); $("#stop").classList.remove("hidden");
+  liveEl.classList.remove("hidden"); liveEl.classList.add("flex");
+  clearInterval(liveTimer); liveTimer = setInterval(renderLive, 250); renderLive();
+}
+function renderLive() {
+  const now = Date.now();
+  const total = now - (activeRun?.startedAt || liveStart || now);
+  const phaseElapsed = now - (activeRun?.phaseAt || liveStart || now);
+  if (awaiting) { liveEl.innerHTML = `<span class="text-warn">⏸ awaiting your approval — click <b>Allow</b> or <b>Deny</b> above</span>`; return; }
+  const phase = activeRun?.phase || livePhase || "prefill";
+  const label = phase === "tool" && liveToolName ? `running ${esc(liveToolName)}` : (PHASE_LABEL[phase] || esc(phase));
+  const tok = liveTokens ? `<span>output ~${liveTokens.toLocaleString()} tok</span>` : "";
+  const heartbeat = activeRun?.heartbeat ? `<span class="text-dim">${esc(activeRun.heartbeat)}</span>` : "";
+  liveEl.innerHTML = `<span class="spin" aria-hidden="true"></span><strong>${label}</strong><span>${formatDuration(phaseElapsed)} phase</span><span>${formatDuration(total)} total</span>${tok}${heartbeat}<span class="ml-auto text-dim">Stop is always available</span>`;
+}
+
+function addRunSummary(m) {
+  if (!activeRun) return;
+  const endedAt = Number(m.at) || Date.now();
+  if (activeRun.phase) activeRun.durations[activeRun.phase] = (activeRun.durations[activeRun.phase] || 0) + Math.max(0, endedAt - activeRun.phaseAt);
+  const duration = Number(m.durationMs) || Math.max(0, endedAt - activeRun.startedAt);
+  const usage = m.usage || activeRun.usage;
+  const outcome = ["completed", "cancelled", "error"].includes(m.outcome) ? m.outcome : "error";
+  const el = document.createElement("section");
+  el.className = `run-summary ${outcome}`;
+  const phases = Object.entries(activeRun.durations).filter(([, ms]) => ms > 0).map(([name, ms]) => `${PHASE_LABEL[name] || name} ${formatDuration(ms)}`);
+  el.innerHTML = `<div class="run-summary-main"><span class="run-outcome">${esc(outcome)}</span><span>${formatDuration(duration)}</span><span>${Number(m.toolCount ?? activeRun.toolCount) || 0} tool calls</span>${usage ? `<span>${Number(usage.inTok || 0).toLocaleString()} in · ${Number(usage.outTok || 0).toLocaleString()} out · ${Number(usage.tps || 0).toFixed(1)} t/s</span>` : ""}</div>${phases.length ? `<div class="run-phases">${phases.map(esc).join(" · ")}</div>` : ""}`;
+  messages.appendChild(el);
+  scroll();
+}
+
+function stopLive() {
+  busy = false; awaiting = false; livePhase = null; clearInterval(liveTimer); liveTimer = null;
+  $("#send").classList.remove("hidden"); $("#stop").classList.add("hidden");
+  liveEl.classList.add("hidden"); liveEl.classList.remove("flex");
+  activeRun = null;
+}
 
 function setContext(used, limit) {
   $("#ctx-used").textContent = used.toLocaleString(); $("#ctx-limit").textContent = (limit || 0).toLocaleString();
@@ -282,9 +429,6 @@ function renderSessions(list, active) {
         e.stopPropagation(); 
         return; 
       } 
-      messages.innerHTML = ""; 
-      cur = null; 
-      pendingTools = []; 
       send({ t: "load_session", id: s.id }); 
     };
     box.appendChild(row);
@@ -308,8 +452,14 @@ function applyConfig(c) {
   state = { ...state, ...c };
   $("#cwd").textContent = c.cwd || "—"; $("#cwd").title = c.cwd || "";
   selectModel(c.model);
-  $("#think-btn").classList.toggle("text-white", !!c.thinking);
-  $("#think-btn").classList.toggle("border-zinc-400", !!c.thinking);
+  const thinkBtn = $("#think-btn");
+  thinkBtn.classList.toggle("text-white", !!c.thinking);
+  thinkBtn.classList.toggle("border-zinc-400", !!c.thinking);
+  thinkBtn.classList.toggle("active", !!c.thinking);
+  thinkBtn.setAttribute("aria-pressed", String(!!c.thinking));
+  thinkBtn.title = c.thinking
+    ? "Model reasoning generation is on; returned reasoning is shown live"
+    : "Model reasoning generation is off";
   const eb = $("#ext-badge"); if (eb) { eb.classList.toggle("hidden", !c.extConnected); eb.classList.toggle("flex", !!c.extConnected); }
   if (c.incognito) applyIncognito(c.incognito, c.backendWarning);
   
@@ -421,46 +571,100 @@ function toggleIncognito() {
 
 // ── websocket ──
 const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
-function connect() {
-  ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => $("#conn").className = "ml-auto w-2.5 h-2.5 rounded-full bg-grn border border-black";
-  ws.onclose = () => { $("#conn").className = "ml-auto w-2.5 h-2.5 rounded-full bg-danger border border-black"; stopLive(); setTimeout(connect, 1200); };
-  ws.onmessage = (ev) => {
-    const m = JSON.parse(ev.data);
+function setConnectionState(kind, label) {
+  const el = $("#conn");
+  el.className = `connection-dot ml-auto ${kind === "connected" ? "bg-grn" : kind === "connecting" ? "bg-warn" : "bg-danger"}`;
+  el.setAttribute("aria-label", label);
+  el.title = label;
+}
+
+async function connect() {
+  const epoch = ++connectionEpoch;
+  clearTimeout(reconnectTimer);
+  setConnectionState("connecting", "Connecting to local-cli");
+  try {
+    const response = await fetch("/api/bootstrap", { cache: "no-store" });
+    if (!response.ok) throw new Error(`bootstrap HTTP ${response.status}`);
+    const bootstrap = await response.json();
+    if (!bootstrap?.token || bootstrap.protocol !== 2) throw new Error("incompatible local-cli server");
+    bootToken = bootstrap.token;
+  } catch {
+    if (epoch !== connectionEpoch) return;
+    setConnectionState("disconnected", "Disconnected — retrying");
+    reconnectTimer = setTimeout(connect, 1200);
+    return;
+  }
+
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${scheme}://${location.host}/ws?token=${encodeURIComponent(bootToken)}&clientId=${encodeURIComponent(clientId)}`);
+  ws = socket;
+  socket.onopen = () => {
+    if (epoch !== connectionEpoch) { socket.close(); return; }
+    setConnectionState("connected", "Connected");
+  };
+  socket.onclose = () => {
+    if (epoch !== connectionEpoch) return;
+    setConnectionState("disconnected", "Disconnected — retrying");
+    finishStreaming(); stopLive();
+    reconnectTimer = setTimeout(connect, 1200);
+  };
+  socket.onmessage = (ev) => {
+    if (epoch !== connectionEpoch) return;
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.runId && Number.isSafeInteger(m.seq)) {
+      const previous = receivedRunSeq.get(m.runId) || 0;
+      if (m.seq <= previous) return;
+      receivedRunSeq.set(m.runId, m.seq);
+    }
     switch (m.t) {
       case "ready":
-        if (!m.config) { addNote("This page is talking to an OLD server. Fully stop the running `bun run web` (close its terminal / kill the process on port 4317) and start it again, then refresh.", "error"); break; }
-        applyConfig(m.config); setContext(0, m.config.contextWindow); 
-        send({ t: "servers" });
-        send({ t: "ports" });
+        if (!m.config || m.protocol !== 2) { addNote("The web page and server protocol versions do not match. Restart `bun run web`, then reload this page.", "error"); break; }
+        applyConfig(m.config); setContext(0, m.config.contextWindow);
+        send({ t: "servers" }); send({ t: "ports" });
         break;
       case "config": applyConfig(m.config); break;
+      case "run_start": beginRun(m); startLive(); break;
       case "user": addUser(m.text, m.images); cur = null; break;
-      case "text": if (!busy) startLive(); livePhase = "generating"; liveThinking = !!m.think; addText(m.v, m.think); break;
-      case "tool_call": if (!busy) startLive(); livePhase = "tool"; liveToolName = m.name; setBrowserAction(m.name, m.summary); addTool(m.name, m.summary); break;
-      case "tool_result": livePhase = null; setBrowserAction(null); fillTool(m.name, m.result); break;
-      case "status": livePhase = m.phase === "generating" ? "generating" : m.phase; renderLive(); break;
-      case "progress": liveTokens = m.tok; break;
+      case "text":
+        if (!busy) startLive();
+        if (m.think && activeRun?.phase !== "reasoning") setRunPhase("reasoning", Number(m.at) || Date.now());
+        else if (!m.think && activeRun?.phase !== "answer") setRunPhase("answer", Number(m.at) || Date.now());
+        addText(m.v, m.think); break;
+      case "tool_progress":
+        if (m.phase === "running") { liveToolName = m.name; setRunPhase("tool", Number(m.at) || Date.now()); }
+        updateToolProgress(m); renderLive(); break;
+      case "tool_call":
+        if (!busy) startLive(); liveToolName = m.name; activeRun && activeRun.toolCount++;
+        setBrowserAction(m.name, m.summary); addTool(m.name, m.summary, m.toolId, m.args); break;
+      case "tool_result": setBrowserAction(null); fillTool(m.name, m.result, m.toolId, m.durationMs, m.phase); break;
+      case "phase": setRunPhase(m.phase, Number(m.at) || Date.now()); break;
+      case "status": setRunPhase(m.phase, Number(m.at) || Date.now()); break; // protocol v1 compatibility
+      case "heartbeat":
+        if (!activeRun) beginRun(m);
+        activeRun.heartbeat = m.message || `Still ${m.phase || "working"}`;
+        if (m.phase && activeRun.phase !== m.phase) setRunPhase(m.phase, Number(m.at) || Date.now());
+        renderLive(); break;
+      case "progress": liveTokens = Number(m.tok) || 0; renderLive(); break;
+      case "usage":
+        if (activeRun) activeRun.usage = { inTok: m.inTok, outTok: m.outTok, tps: m.tps };
+        renderLive(); break;
       case "notice": addNote(m.v, "info"); break;
       case "error": addNote(m.v, "error"); break;
       case "permission": addAsk(m); break;
       case "choice": addAsk(m); break;
+      case "plan_approval": addPlanApproval(m); break;
       case "context": setContext(m.used, m.limit); break;
       case "mode": setMode(m.mode); break;
       case "loop_warning": showLoopWarning(m); break;
       case "image": addImage(m.path, m.data); break;
       case "incognito": {
-        // The server also sends this on connect to sync a tab that joined an
-        // already-incognito process — announce a real CHANGE, not the handshake.
         const changed = incognito.on !== !!m.state.on;
         applyIncognito(m.state, m.backendWarning);
         if (changed) {
           addNote(m.state.on
-            ? "Incognito on — this conversation is not being saved. Lookups go through a throwaway browser, so nothing lands in your Chrome history (but a search engine still sees the query — never ask it to look up a secret). File edits still change your disk and can't be undone from here."
-            : "Incognito off — chats are saved again. Nothing from the incognito session was written, and settings you changed during it were discarded.", "info");
-        } else if (m.state.on) {
-          addNote("Incognito is on — this conversation is not being saved.", "info");
-        }
+            ? "Incognito on — this conversation is not being saved. Lookups use a throwaway browser; file edits still change your disk and cannot be undone here."
+            : "Incognito off — chats are saved again. Nothing from the private session was persisted, and its setting changes were discarded.", "info");
+        } else if (m.state.on) addNote("Incognito is on — this conversation is not being saved.", "info");
         break;
       }
       case "sessions": renderSessions(m.list, m.active); break;
@@ -470,39 +674,82 @@ function connect() {
       case "browser_state": browserBusy = false; renderBrowserState(m); break;
       case "browser_frame": renderBrowserFrame(m.data); break;
       case "browser_live": liveViewOn = !!m.on; $("#dash-b-live-btn").classList.toggle("text-grn", liveViewOn); break;
+      case "ui_action":
+        if (m.action === "files") attachModal();
+        else if (m.action === "models") { $("#model").focus(); addNote("Choose a model from the Model control in the run bar.", "info"); }
+        else if (m.action === "sessions") { $("#sidebar").classList.remove("hidden"); updateBackdrop(); $("#sessions").focus?.(); }
+        else if (m.action === "profiles") { $("#dashboard").classList.remove("hidden"); setTab("profiles"); updateBackdrop(); }
+        break;
       case "cleared": messages.innerHTML = ""; cur = null; pendingTools = []; break;
-      case "turn_end": finishStreaming(); stopLive(); setBrowserAction(null); hideLoopWarning(); autoSwitched = false; if (m.mode === "plan") showPlanApprove(); break;
+      case "run_end":
+        finishStreaming(); addRunSummary(m); stopLive(); setBrowserAction(null); hideLoopWarning(); autoSwitched = false;
+        if (m.outcome === "cancelled") addNote("Run cancelled.", "info");
+        break;
+      case "turn_end": finishStreaming(); stopLive(); setBrowserAction(null); hideLoopWarning(); autoSwitched = false; break;
     }
   };
 }
 
-function showPlanApprove() {
+function addPlanApproval(m) {
+  finishStreaming();
   const el = document.createElement("div");
-  el.className = "rounded-full border border-zinc-600 bg-panel pl-5 pr-2 py-2 animate-pop flex items-center gap-3 max-w-lg mx-auto";
-  el.innerHTML = `<i data-lucide="clipboard-check" class="w-4 h-4 text-white"></i><span class="text-xs font-bold flex-1">Plan ready. Approve to build it.</span>
-    <button class="px-3.5 py-1.5 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Approve & build</button>`;
-  $("button", el).onclick = () => { setMode("normal"); send({ t: "set_mode", mode: "normal" }); el.remove(); submitText("Approve the plan and implement it now."); };
+  el.className = "rounded-md border border-zinc-600 bg-panel p-4 animate-pop space-y-3";
+  el.innerHTML = `<div class="flex items-center gap-2 text-sm font-semibold"><i data-lucide="clipboard-check" class="w-4 h-4 text-warn"></i><span>Plan proposed</span></div><div class="prose plan-copy">${md(m.plan || "")}</div><div class="opts flex flex-wrap gap-2"></div>`;
+  awaiting = true; renderLive();
+  const done = (decision, label) => {
+    awaiting = false; renderLive();
+    send({ t: "plan_decision", id: m.id, decision });
+    const opts = $(".opts", el); opts.textContent = `→ ${label}`; opts.className = "opts text-xs text-dim";
+  };
+  const opts = $(".opts", el);
+  opts.append(
+    mkBtn("Approve and build", "bg-white text-black hover:bg-zinc-200", () => done("approve", "Approved — implementation continues in this run")),
+    mkBtn("Keep planning", "border border-edge text-zinc-300", () => done("keep", "Continue refining the plan")),
+    mkBtn("Reject", "border border-edge text-zinc-400 hover:text-danger", () => done("reject", "Rejected")),
+  );
   messages.appendChild(el); icons(); scroll();
 }
 
 // ── modal helper ──
 const modal = $("#modal"), modalCard = $("#modal-card");
+let modalReturnFocus = null;
 function openModal(title, bodyHTML) {
+  modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   modalCard.innerHTML = `<div class="flex items-center gap-2 px-4 py-3 border-b border-edge/60">
-    <span class="font-semibold text-sm flex-1 text-white">${title}</span>
-    <button id="modal-x" class="text-dim hover:text-white transition"><i data-lucide="x" class="w-4 h-4"></i></button></div>
+    <h2 id="modal-title" class="font-semibold text-sm flex-1 text-white">${esc(title)}</h2>
+    <button id="modal-x" type="button" aria-label="Close dialog" class="text-dim hover:text-white transition"><i data-lucide="x" class="w-4 h-4"></i></button></div>
     <div class="overflow-y-auto p-4">${bodyHTML}</div>`;
+  modalCard.setAttribute("aria-labelledby", "modal-title");
+  modalCard.removeAttribute("aria-label");
   modal.classList.remove("hidden"); icons();
   $("#modal-x").onclick = closeModal;
+  requestAnimationFrame(() => (modalCard.querySelector("[autofocus], input, select, textarea, button") || modalCard).focus());
   return modalCard;
 }
-function closeModal() { modal.classList.add("hidden"); }
+function closeModal() {
+  if (modal.classList.contains("hidden")) return;
+  modal.classList.add("hidden");
+  const target = modalReturnFocus;
+  modalReturnFocus = null;
+  if (target?.isConnected) target.focus();
+}
 modal.onclick = (e) => { if (e.target === modal) closeModal(); };
+document.addEventListener("keydown", (e) => {
+  if (modal.classList.contains("hidden")) return;
+  if (e.key === "Escape") { e.preventDefault(); closeModal(); return; }
+  if (e.key !== "Tab") return;
+  const focusable = $$("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])", modalCard)
+    .filter(el => !el.classList.contains("hidden"));
+  if (!focusable.length) { e.preventDefault(); modalCard.focus(); return; }
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 
 // ── models ──
 async function loadModels() {
   try {
-    const list = await (await fetch("/api/models")).json();
+    const list = await getJSON("/api/models", []);
     const sel = $("#model"); sel.innerHTML = "";
     for (const m of list) { 
       const o = document.createElement("option"); 
@@ -524,34 +771,164 @@ async function modelInfoModal() {
   $(".overflow-y-auto", c).innerHTML = `<div class="space-y-2.5">${rows.filter(r => r[1]).map(r => `<div class="flex gap-3 text-xs"><span class="text-dim w-32 shrink-0 font-medium">${r[0]}</span><span class="font-mono text-white">${esc(String(r[1]))}</span></div>`).join("")}</div>`;
 }
 
+// ── folder browser helpers ──
+function getParentDir(dir) {
+  let n = (dir || "").replace(/[\/\\]+/g, "/").replace(/\/+$/, "");
+  if (!n || n === "/" || /^[a-zA-Z]:$/.test(n)) return n.length === 2 ? n + "/" : "/";
+  const idx = n.lastIndexOf("/");
+  if (idx <= 0) return /^[a-zA-Z]:/.test(n) ? n.slice(0, 2) + "/" : "/";
+  let p = n.slice(0, idx);
+  if (/^[a-zA-Z]:$/.test(p)) p += "/";
+  return p;
+}
+
+function parseBreadcrumbs(dir) {
+  const norm = (dir || "").replace(/\\/g, "/");
+  const isWin = /^[a-zA-Z]:/.test(norm);
+  const parts = norm.split("/").filter(Boolean);
+  const crumbs = [];
+  if (isWin) {
+    const drive = parts[0].includes(":") ? parts[0] : parts[0] + ":";
+    let acc = drive + "\\";
+    crumbs.push({ label: drive.toUpperCase() + "\\", path: acc });
+    for (let i = 1; i < parts.length; i++) {
+      acc += (acc.endsWith("\\") ? "" : "\\") + parts[i];
+      crumbs.push({ label: parts[i], path: acc });
+    }
+  } else {
+    let acc = "/";
+    crumbs.push({ label: "/", path: "/" });
+    for (let i = 0; i < parts.length; i++) {
+      acc = acc === "/" ? "/" + parts[i] : acc + "/" + parts[i];
+      crumbs.push({ label: parts[i], path: acc });
+    }
+  }
+  return crumbs;
+}
+
 // ── folder browser ──
 async function browse(path, { multi = false, onPick } = {}) {
   const data = await getJSON(`/api/dir?path=${encodeURIComponent(path)}`);
   if (!data) { $(".overflow-y-auto", modalCard).innerHTML = `<div class="text-danger text-sm">Couldn't list that folder. Make sure the web server is up to date (restart <span class="font-mono">bun run web</span>).</div>`; return; }
   const c = modalCard;
+  const crumbs = parseBreadcrumbs(data.dir);
+  const drives = Array.isArray(data.drives) ? data.drives : [];
+
   $(".overflow-y-auto", c).innerHTML = `
-    <div class="font-mono text-[11px] text-dim mb-3 break-all">${esc(data.dir)}</div>
-    <div class="space-y-0.5 max-h-[46vh] overflow-y-auto border border-edge bg-zinc-950 rounded-2xl p-1.5">${data.entries.map((e, i) => `
-      <div data-i="${i}" data-dir="${e.isDir}" data-name="${esc(e.name)}" class="entry flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-zinc-900 cursor-pointer transition">
-        ${multi && !e.isDir ? `<input type="checkbox" class="chk accent-white" />` : `<span class="w-3.5"></span>`}
-        <i data-lucide="${e.isDir ? "folder" : "file"}" class="w-4 h-4 ${e.isDir ? "text-white" : "text-dim"}"></i>
-        <span class="text-xs font-mono ${e.name === ".." ? "text-dim" : "text-zinc-350"}">${esc(e.name)}</span></div>`).join("")}</div>
-    <div class="flex gap-2 mt-4 pt-3 border-t border-edge/60">
-      ${multi ? `<button id="attach-go" class="px-4 py-2 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Attach selected</button>` : `<button id="use-dir" class="px-4 py-2 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Use this folder</button>`}
-      <button id="browse-close" class="px-4 py-2 rounded-full border border-edge text-xs text-dim hover:text-white transition">Cancel</button></div>`;
+    ${drives.length > 0 ? `
+      <div class="flex items-center gap-1.5 mb-2 overflow-x-auto scrollbar-none pb-0.5">
+        <span class="text-[11px] font-medium text-dim mr-1 shrink-0">Drives:</span>
+        ${drives.map(d => {
+          const active = data.dir.toLowerCase().startsWith(d.slice(0, 2).toLowerCase());
+          return `<button data-drive="${esc(d)}" class="drive-chip px-2.5 py-1 rounded-lg text-xs font-mono font-semibold transition shrink-0 ${active ? "bg-white text-black font-bold shadow-sm" : "bg-zinc-900 border border-edge text-zinc-300 hover:text-white hover:bg-zinc-800"}">${esc(d)}</button>`;
+        }).join("")}
+      </div>
+    ` : ""}
+
+    <form id="browse-form" class="flex items-center gap-1.5 mb-2">
+      <button id="browse-up" type="button" title="Go to parent folder" class="px-2.5 py-1.5 rounded-xl border border-edge bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs flex items-center gap-1 transition shrink-0 ${data.isRoot ? "opacity-40 cursor-not-allowed" : ""}">
+        <i data-lucide="arrow-up" class="w-3.5 h-3.5"></i>
+        <span class="font-mono text-[11px]">Up</span>
+      </button>
+      <div class="relative flex-1">
+        <input id="browse-input" type="text" value="${esc(data.dir)}" spellcheck="false" class="w-full bg-zinc-950 border border-edge focus:border-zinc-500 rounded-xl px-3 py-1.5 text-xs font-mono text-white placeholder-zinc-500 outline-none transition" />
+      </div>
+      <button type="submit" class="px-3.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-semibold text-xs transition shrink-0">Go</button>
+    </form>
+
+    <div class="flex items-center gap-1 overflow-x-auto pb-1 mb-2 text-xs font-mono scrollbar-none">
+      ${crumbs.map((cr, i) => `
+        <button data-crumb-path="${esc(cr.path)}" class="crumb-btn text-xs text-zinc-400 hover:text-white hover:underline transition shrink-0 ${i === crumbs.length - 1 ? "text-white font-bold" : ""}">${esc(cr.label)}</button>
+        ${i < crumbs.length - 1 ? `<span class="text-zinc-600 shrink-0">/</span>` : ""}
+      `).join("")}
+    </div>
+
+    <div class="space-y-0.5 max-h-[44vh] overflow-y-auto border border-edge bg-zinc-950 rounded-2xl p-1.5">
+      ${data.entries.length === 0 ? `<div class="p-6 text-center text-dim text-xs">This folder is empty.</div>` : data.entries.map((e, i) => `
+        <div data-i="${i}" data-dir="${e.isDir}" data-name="${esc(e.name)}" class="entry flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-zinc-900 cursor-pointer transition select-none">
+          ${multi && !e.isDir ? `<input type="checkbox" class="chk accent-white cursor-pointer" />` : `<span class="w-3.5"></span>`}
+          <i data-lucide="${e.isDir ? (e.name === ".." ? "corner-left-up" : "folder") : "file"}" class="w-4 h-4 shrink-0 ${e.isDir ? "text-white" : "text-dim"}"></i>
+          <span class="text-xs font-mono truncate ${e.name === ".." ? "text-dim" : "text-zinc-300"}">${esc(e.name)}</span>
+        </div>`).join("")}
+    </div>
+
+    <div class="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-edge/60">
+      <div class="text-[11px] font-mono text-dim truncate max-w-[280px]">
+        ${multi ? `<span id="sel-count">0 items selected</span>` : `<span class="text-zinc-400">Selected:</span> <span class="text-white">${esc(data.dir)}</span>`}
+      </div>
+      <div class="flex items-center gap-2">
+        ${multi ? `<button id="attach-go" class="px-4 py-2 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Attach selected</button>` : `<button id="use-dir" class="px-4 py-2 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Use this folder</button>`}
+        <button id="browse-close" class="px-4 py-2 rounded-full border border-edge text-xs text-dim hover:text-white transition">Cancel</button>
+      </div>
+    </div>`;
+
   icons();
   c.__dir = data.dir;
+
+  const updateSelCount = () => {
+    const count = $$(".entry .chk:checked", c).length;
+    const countEl = $("#sel-count", c);
+    if (countEl) countEl.textContent = `${count} item${count === 1 ? "" : "s"} selected`;
+  };
+
   $$(".entry", c).forEach(row => {
     row.onclick = (e) => {
-      if (e.target.classList.contains("chk")) return;
+      if (e.target.classList.contains("chk")) {
+        updateSelCount();
+        return;
+      }
       const name = row.dataset.name, isDir = row.dataset.dir === "true";
-      if (isDir) { const next = name === ".." ? data.dir.replace(/[\\/][^\\/]+[\\/]?$/, "") : data.dir.replace(/[\\/]?$/, "/") + name; browse(next, { multi, onPick }); }
-      else if (multi) { const chk = $(".chk", row); chk.checked = !chk.checked; }
+      if (isDir) {
+        let next;
+        if (name === "..") {
+          next = getParentDir(data.dir);
+        } else {
+          const sep = (data.dir.includes("\\") || /^[a-zA-Z]:/.test(data.dir)) ? "\\" : "/";
+          next = data.dir.endsWith("/") || data.dir.endsWith("\\") ? (data.dir + name) : (data.dir + sep + name);
+        }
+        browse(next, { multi, onPick });
+      } else if (multi) {
+        const chk = $(".chk", row);
+        if (chk) { chk.checked = !chk.checked; updateSelCount(); }
+      }
     };
   });
+
+  $$(".drive-chip", c).forEach(b => {
+    b.onclick = () => browse(b.dataset.drive, { multi, onPick });
+  });
+
+  const upBtn = $("#browse-up", c);
+  if (upBtn && !data.isRoot) {
+    upBtn.onclick = () => browse(getParentDir(data.dir), { multi, onPick });
+  }
+
+  const form = $("#browse-form", c);
+  if (form) {
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const val = $("#browse-input", c).value.trim();
+      if (val) browse(val, { multi, onPick });
+    };
+  }
+
+  $$(".crumb-btn", c).forEach(b => {
+    b.onclick = () => browse(b.dataset.crumbPath, { multi, onPick });
+  });
+
   $("#browse-close").onclick = closeModal;
-  if (multi) $("#attach-go").onclick = () => { const sel = $$(".entry", c).filter(r => $(".chk", r)?.checked).map(r => c.__dir.replace(/[\\/]?$/, "/") + r.dataset.name); if (sel.length) { send({ t: "add_files", paths: sel }); closeModal(); } };
-  else $("#use-dir").onclick = () => onPick(c.__dir);
+  if (multi) {
+    $("#attach-go").onclick = () => {
+      const sep = (data.dir.includes("\\") || /^[a-zA-Z]:/.test(data.dir)) ? "\\" : "/";
+      const sel = $$(".entry", c).filter(r => $(".chk", r)?.checked).map(r => {
+        const name = r.dataset.name;
+        return data.dir.endsWith("/") || data.dir.endsWith("\\") ? (data.dir + name) : (data.dir + sep + name);
+      });
+      if (sel.length) { send({ t: "add_files", paths: sel }); closeModal(); }
+    };
+  } else {
+    $("#use-dir").onclick = () => onPick(c.__dir);
+  }
 }
 function folderModal() { openModal("Working folder", `<div class="text-dim text-sm">Loading…</div>`); browse(state.cwd, { onPick: (dir) => { send({ t: "set_cwd", path: dir }); closeModal(); } }); }
 function attachModal() { openModal("Attach files to context", `<div class="text-dim text-sm">Loading…</div>`); browse(state.cwd, { multi: true }); }
@@ -836,7 +1213,7 @@ function renderBrowserState(m) {
 
 // ── command index (the "/" menu, like the terminal) ──
 const COMMANDS = [
-  ["new chat", () => { messages.innerHTML = ""; send({ t: "new" }); }],
+  ["new chat", () => send({ t: "new" })],
   ["browser — open & view a page", () => setTab("browser")],
   ["system — hardware & model picks", () => setTab("system")],
   ["profiles — switch / learn", () => setTab("profiles")],
@@ -844,15 +1221,27 @@ const COMMANDS = [
   ["ports — free a stuck port", () => setTab("runtime")],
   ["/init — generate project context", () => send({ t: "init" })],
   ["compact — shrink the conversation", () => send({ t: "compact" })],
-  ["mode: chat (talk only — never creates files)", () => { setMode("chat"); send({ t: "set_mode", mode: "chat" }); }],
-  ["mode: auto (run by itself)", () => { setMode("auto"); send({ t: "set_mode", mode: "auto" }); }],
-  ["mode: plan (research first)", () => { setMode("plan"); send({ t: "set_mode", mode: "plan" }); }],
-  ["mode: debug (investigate via logs, console, network)", () => { setMode("debug"); send({ t: "set_mode", mode: "debug" }); }],
-  ["mode: normal (ask per action)", () => { setMode("normal"); send({ t: "set_mode", mode: "normal" }); }],
+  ["mode: chat (talk only — never creates files)", () => send({ t: "set_mode", mode: "chat" })],
+  ["mode: auto (run by itself)", () => send({ t: "set_mode", mode: "auto" })],
+  ["mode: plan (research first)", () => send({ t: "set_mode", mode: "plan" })],
+  ["mode: debug (investigate via logs, console, network)", () => send({ t: "set_mode", mode: "debug" })],
+  ["mode: normal (ask per action)", () => send({ t: "set_mode", mode: "normal" })],
   ["attach files to context", attachModal],
   ["incognito — don't save this chat", toggleIncognito],
   ["incognito — what it does & doesn't protect", incognitoInfoModal],
 ];
+let serverCommands = [];
+
+async function loadCommandRegistry() {
+  const list = await getJSON("/api/commands", []);
+  serverCommands = Array.isArray(list) ? list.filter(c => c && typeof c.name === "string" && typeof c.description === "string") : [];
+}
+
+function stageSlashCommand(name) {
+  input.value = `/${name} `;
+  autogrow();
+  input.focus();
+}
 
 function commandsModal() {
   const c = openModal("Command index", `
@@ -861,7 +1250,8 @@ function commandsModal() {
   const list = $("#cmd-list", c), q = $("#cmd-q", c);
   const draw = (f = "") => {
     list.innerHTML = "";
-    COMMANDS.filter(([l]) => l.toLowerCase().includes(f.toLowerCase())).forEach(([label, fn]) => {
+    const registry = serverCommands.map(command => [`/${command.name} — ${command.description}`, () => stageSlashCommand(command.name)]);
+    [...COMMANDS, ...registry].filter(([l]) => l.toLowerCase().includes(f.toLowerCase())).forEach(([label, fn]) => {
       const b = document.createElement("button");
       b.className = "w-full text-left px-3 py-2 rounded-xl hover:bg-zinc-900 text-xs text-zinc-300 flex items-center gap-2 transition";
       b.innerHTML = `<i data-lucide="chevron-right" class="w-3.5 h-3.5 text-dim"></i> ${esc(label)}`;
@@ -1035,8 +1425,8 @@ function renderImagePreviews() {
   box.classList.remove("hidden"); box.classList.add("flex");
   box.innerHTML = pendingImages.map((b, i) => `
     <div class="relative">
-      <img src="data:image/png;base64,${b}" class="h-16 w-16 object-cover rounded-xl border border-edge" />
-      <button data-i="${i}" type="button" class="img-rm absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-zinc-900 border border-edge text-dim hover:text-danger text-[10px] leading-none grid place-items-center" title="Remove image">✕</button>
+      <img src="data:image/png;base64,${b}" alt="Image ${i + 1} ready to send" class="h-16 w-16 object-cover rounded-xl border border-edge" />
+      <button data-i="${i}" type="button" aria-label="Remove image ${i + 1}" class="img-rm absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-zinc-900 border border-edge text-dim hover:text-danger text-[10px] leading-none grid place-items-center" title="Remove image">✕</button>
     </div>`).join("");
   $$(".img-rm", box).forEach(b => b.onclick = () => { pendingImages.splice(Number(b.dataset.i), 1); renderImagePreviews(); });
 }
@@ -1046,6 +1436,7 @@ input.addEventListener("paste", (e) => {
   e.preventDefault();
   for (const it of files) {
     const f = it.getAsFile(); if (!f) continue;
+    if (f.size > 5_000_000) { addNote(`Image "${f.name || "clipboard image"}" is larger than 5 MB. Resize it before attaching.`, "error"); continue; }
     const r = new FileReader();
     r.onload = () => {
       if (pendingImages.length >= 4) { addNote("Up to 4 images per message.", "info"); return; }
@@ -1060,6 +1451,11 @@ function submitText(text, images = []) { if ((!text && !images.length) || busy) 
 function submit() {
   const t = input.value.trim();
   if ((!t && !pendingImages.length) || busy) return;
+  if (t.startsWith("/") && !pendingImages.length) {
+    send({ t: "slash", input: t });
+    input.value = ""; autogrow();
+    return;
+  }
   submitText(t, pendingImages.slice());
   pendingImages = []; renderImagePreviews();
   input.value = ""; autogrow();
@@ -1068,7 +1464,7 @@ $("#form").addEventListener("submit", e => { e.preventDefault(); submit(); });
 input.addEventListener("input", () => { autogrow(); if (input.value === "/") { input.value = ""; autogrow(); commandsModal(); } });
 input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
 $("#stop").addEventListener("click", () => send({ t: "interrupt" }));
-$("#new-chat").addEventListener("click", () => { messages.innerHTML = ""; cur = null; pendingTools = []; send({ t: "new" }); });
+$("#new-chat").addEventListener("click", () => send({ t: "new" }));
 $("#sidebar-toggle").addEventListener("click", () => {
   $("#sidebar").classList.toggle("hidden");
   updateBackdrop();
@@ -1084,7 +1480,11 @@ $("#loop-warn-ok").addEventListener("click", hideLoopWarning);
 $("#incog-what").addEventListener("click", incognitoInfoModal);
 $("#incog-off").addEventListener("click", () => send({ t: "set_incognito", on: false }));
 $("#sidebar-commands").addEventListener("click", commandsModal);
-$$("#mode .mode-btn").forEach(b => b.addEventListener("click", () => { setMode(b.dataset.mode); send({ t: "set_mode", mode: b.dataset.mode }); }));
+$$("#mode .mode-btn").forEach(b => b.addEventListener("click", () => send({ t: "set_mode", mode: b.dataset.mode })));
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); commandsModal(); }
+});
 
 // Profiles creation learn
 $("#dash-learn-go").onclick = () => {
@@ -1102,6 +1502,5 @@ setTab(savedTab);
 
 icons();
 setMode("normal");
-loadModels();
-connect();
+connect().then(() => Promise.all([loadModels(), loadCommandRegistry()]));
 input.focus();

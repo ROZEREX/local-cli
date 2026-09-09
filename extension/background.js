@@ -11,13 +11,27 @@ let ws = null;
 let pi = 0;
 let activeTabId = null;
 let reconnectTimer = null;
+let connecting = false;
 const keepPorts = new Set();
 
-function wsUrl() { return `ws://localhost:${PORTS[pi]}/ext`; }
+function wsUrl(token) { return `ws://localhost:${PORTS[pi]}/ext?token=${encodeURIComponent(token)}`; }
 
-function connect() {
+async function connect() {
+  if (connecting || connected()) return;
+  connecting = true;
+  let token;
+  try {
+    const response = await fetch(`http://localhost:${PORTS[pi]}/api/bootstrap`, { cache: "no-store" });
+    const bootstrap = response.ok ? await response.json() : null;
+    if (!bootstrap?.token || bootstrap.protocol !== 2) throw new Error("not a local-cli server");
+    token = bootstrap.token;
+  } catch {
+    connecting = false;
+    advance(); scheduleReconnect(); return;
+  }
   let opened = false, sock;
-  try { sock = new WebSocket(wsUrl()); } catch { advance(); return; }
+  try { sock = new WebSocket(wsUrl(token)); } catch { connecting = false; advance(); scheduleReconnect(); return; }
+  connecting = false;
   ws = sock;
   sock.onopen = () => { opened = true; };
   sock.onerror = () => { try { sock.close(); } catch {} };

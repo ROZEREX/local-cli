@@ -1,5 +1,5 @@
-import { readdirSync, statSync, readFileSync } from "fs";
-import { join, relative } from "path";
+import { readdirSync, statSync, readFileSync, existsSync } from "fs";
+import { join, relative, resolve, dirname } from "path";
 
 export interface DirEntry { name: string; isDir: boolean; }
 
@@ -8,8 +8,44 @@ const MAX_FILE_BYTES = 100 * 1024;       // skip files larger than this
 const MAX_TOTAL_BYTES = 200 * 1024;      // cap total injected content
 const MAX_FILES = 100;                    // cap number of files
 
+export function isRootDir(dir: string): boolean {
+  try {
+    const parent = dirname(dir);
+    return parent === dir || /^[a-zA-Z]:\\?$/i.test(dir) || dir === "/" || dir === "\\";
+  } catch {
+    return false;
+  }
+}
+
+export function listDrives(): string[] {
+  if (process.platform !== "win32") return [];
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+  const drives: string[] = [];
+  for (const l of letters) {
+    const d = `${l}:\\`;
+    try {
+      if (existsSync(d)) drives.push(d);
+    } catch {}
+  }
+  return drives;
+}
+
+export function normalizeBrowsePath(p?: string | null, fallback?: string): string {
+  let s = (p ?? "").trim();
+  if (!s) return fallback ?? process.cwd();
+  if (/^[a-zA-Z]:$/.test(s)) s += "\\";
+  try {
+    let resolved = resolve(s);
+    if (/^[a-zA-Z]:$/.test(resolved)) resolved += "\\";
+    if (existsSync(resolved) && statSync(resolved).isDirectory()) {
+      return resolved;
+    }
+  } catch {}
+  return fallback ?? process.cwd();
+}
+
 // List a directory: dirs first (alpha), then files (alpha). Hidden + ignored
-// dirs are skipped. A ".." entry is added unless `isRoot`.
+// dirs are skipped. A ".." entry is added unless `isRoot` or already at filesystem root.
 export function listDirEntries(dir: string, isRoot = false): DirEntry[] {
   let items: any[];
   try { items = readdirSync(dir, { withFileTypes: true }) as any[]; } catch { return []; }
@@ -22,7 +58,8 @@ export function listDirEntries(dir: string, isRoot = false): DirEntry[] {
   }
   dirs.sort((a, b) => a.name.localeCompare(b.name));
   files.sort((a, b) => a.name.localeCompare(b.name));
-  return [...(isRoot ? [] : [{ name: "..", isDir: true }]), ...dirs, ...files];
+  const showDotDot = !isRoot && !isRootDir(dir);
+  return [...(showDotDot ? [{ name: "..", isDir: true }] : []), ...dirs, ...files];
 }
 
 function looksBinary(buf: Buffer): boolean {

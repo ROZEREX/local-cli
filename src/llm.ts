@@ -3,6 +3,7 @@ import type { ChatCompletionMessageParam, ChatCompletionChunk } from "openai/res
 import { getConfig } from "./config";
 import { TOOL_DEFINITIONS } from "./tools/definitions";
 import { executeTool, canonicalToolName } from "./tools/executor";
+import { isParallelSafeTool, requiresToolPermission } from "./tools/policy";
 import { detectToolSupport, isOllama, detectProvider, modelCapabilities, loadedModels, type Provider } from "./ollama";
 import { parseToolCalls, parseLeakedToolCall, ProseFilter, NarrationFilter } from "./toolparse";
 import { RepetitionGuard, HarmonyFilter, ToolLoopGuard } from "./think";
@@ -477,11 +478,34 @@ export async function warmUp(): Promise<void> {
   }
 }
 
+export type ToolCallPhase = "arguments" | "queued" | "running" | "completed" | "denied" | "blocked" | "failed";
+
+export interface ToolCallMeta {
+  /** Stable for the lifetime of this call and suitable for UI correlation. */
+  callId: string;
+  /** Position in the model's tool-call batch. */
+  index: number;
+  phase: ToolCallPhase;
+  /** When the model first began emitting this call, when available. */
+  detectedAt?: number;
+  /** Wall-clock execution start. */
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+}
+
+export type ToolPermissionDecision = boolean | {
+  /** Optional user-edited arguments (for example selected diff hunks). */
+  args?: any;
+  /** Consumers should echo this to protect against stale approval responses. */
+  callId?: string;
+};
+
 export interface StreamCallbacks {
   onText: (chunk: string) => void;
-  onToolCall: (name: string, args: string) => void;
-  onToolCallProgress?: (name: string, args: string) => void;
-  onToolResult: (name: string, result: string) => void;
+  onToolCall: (name: string, args: string, meta?: ToolCallMeta) => void;
+  onToolCallProgress?: (name: string, args: string, meta?: ToolCallMeta) => void;
+  onToolResult: (name: string, result: string, meta?: ToolCallMeta) => void;
   onError: (err: Error) => void;
   // One-off informational notices (e.g. falling back to prompted tool-calling).
   onNotice?: (msg: string) => void;
@@ -504,7 +528,7 @@ export interface StreamCallbacks {
   // Return false to deny a tool call. Mutating tools route through here.
   // May also return { args } to apply a USER-MODIFIED version of the call
   // (e.g. only the diff hunks they selected in the permission prompt).
-  requestPermission?: (name: string, args: any) => Promise<boolean | { args: any }>;
+  requestPermission?: (name: string, args: any, meta?: ToolCallMeta) => Promise<ToolPermissionDecision>;
   // Ask the user to pick from options (the ask_user tool). Returns their answer.
   requestChoice?: (question: string, options: string[]) => Promise<string>;
   // Present a finished plan for approval (the propose_plan tool). "approve"
@@ -523,12 +547,6 @@ export interface ChatOptions {
   chatMode?: boolean;   // block mutating tools (conversation only — answer in text)
   autoAccept?: boolean; // skip permission prompts
 }
-
-// Tools that change disk / run arbitrary code.
-const MUTATING_TOOLS = new Set(["write_file", "edit_file", "delete_file", "bash", "run_server", "stop_server", "update_profile", "kill_port", "browser_open", "browser_click", "browser_type", "screenshot", "page_click", "page_type", "page_open", "page_navigate", "spawn_agents", "generate_image"]);
-// Read-only tools — safe to run in parallel (e.g. reading many files at once).
-// set_todos only touches the in-memory checklist, so it needs no permission.
-const READONLY_TOOLS = new Set(["read_file", "glob_files", "grep_files", "list_dir", "server_logs", "list_servers", "read_profile", "list_ports", "system_info", "recall", "task_list", "set_todos", "browser_console", "browser_network", "browser_performance"]);
 
 // Cache tool-support detection and 400-fallbacks per baseUrl::model.
 const toolSupportCache = new Map<string, boolean>();
@@ -636,12 +654,30 @@ async function reportTurnStart(callbacks: StreamCallbacks): Promise<"loading" | 
   return phase;
 }
 
+function finishToolCall(
+  name: string,
+  result: string,
+  callbacks: StreamCallbacks,
+  meta: ToolCallMeta,
+  phase: Exclude<ToolCallPhase, "arguments" | "queued" | "running">
+): string {
+  const completedAt = Date.now();
+  callbacks.onToolResult(name, result, {
+    ...meta,
+    phase,
+    completedAt,
+    durationMs: meta.startedAt === undefined ? undefined : Math.max(0, completedAt - meta.startedAt),
+  });
+  return result;
+}
+
 // Shared policy gate: plan-mode block, permission, execution. Returns result.
 async function runTool(
   name: string,
   args: any,
   callbacks: StreamCallbacks,
-  options: ChatOptions
+  options: ChatOptions,
+  meta: ToolCallMeta
 ): Promise<string> {
   // ask_user is interactive, not an action: pause and let the user pick. Allowed
   // in every mode (asking never changes anything).
@@ -658,8 +694,7 @@ async function runTool(
       try { answer = await callbacks.requestChoice(question, opts); } catch { /* keep default */ }
     }
     const r = `The user answered "${answer}" to: ${question}`;
-    callbacks.onToolResult(name, r);
-    return r;
+    return finishToolCall(name, r, callbacks, meta, "completed");
   }
 
   // propose_plan is the plan-mode exit: the plan goes to an interactive
@@ -687,34 +722,60 @@ async function runTool(
     } else {
       r = "Plan noted. There is no interactive approval available in this context — present the plan as your final answer and wait for the user's reply.";
     }
-    callbacks.onToolResult(name, r);
-    return r;
+    return finishToolCall(name, r, callbacks, meta, r.startsWith("Error:") ? "failed" : "completed");
   }
 
-  if (options.planMode && MUTATING_TOOLS.has(name)) {
+  const needsPermission = requiresToolPermission(name);
+
+  if (options.planMode && needsPermission) {
     const r = `[plan mode] ${name} is blocked. You are planning, not executing — present your plan and wait for approval.`;
-    callbacks.onToolResult(name, r);
-    return r;
+    return finishToolCall(name, r, callbacks, meta, "blocked");
   }
   // Chat mode is enforced here, not just in the prompt: models reliably ignore a
   // "don't build" instruction the moment a request sounds like work.
-  if (options.chatMode && MUTATING_TOOLS.has(name)) {
+  if (options.chatMode && needsPermission) {
     const r = `[chat mode] ${name} is blocked — the user asked to talk, not to have files built. Write the answer directly in your reply instead (a list means a list in the message; show code as a fenced block, don't create the file). If this genuinely requires changing files, say so in one line and ask the user to switch to normal or auto mode. Do not call this tool again.`;
-    callbacks.onToolResult(name, r);
-    return r;
+    return finishToolCall(name, r, callbacks, meta, "blocked");
   }
-  if (MUTATING_TOOLS.has(name) && !options.autoAccept && callbacks.requestPermission) {
+
+  if (needsPermission && !options.autoAccept) {
     // Skip the prompt for tools the user permanently allowed (Always allow / 'a').
     const persisted = getConfig().alwaysAllow ?? [];
     if (!persisted.includes(name)) {
-      const approved = await callbacks.requestPermission(name, args);
-      if (!approved) {
-        const r = "Tool call denied by user.";
-        callbacks.onToolResult(name, r);
-        return r;
+      // Permission is fail-closed. A headless consumer must opt into autoAccept;
+      // merely omitting the callback can never grant a side-effecting call.
+      if (!callbacks.requestPermission) {
+        return finishToolCall(name, "Tool call denied: no permission handler is available.", callbacks, meta, "denied");
       }
-      // Partial approval: the user selected a subset of the diff's hunks.
-      if (typeof approved === "object" && approved.args) args = approved.args;
+
+      let decision: ToolPermissionDecision;
+      try {
+        decision = await callbacks.requestPermission(name, args, meta);
+      } catch {
+        return finishToolCall(name, "Tool call denied: the permission request failed or was cancelled.", callbacks, meta, "denied");
+      }
+
+      if (decision !== true && (!decision || typeof decision !== "object")) {
+        return finishToolCall(name, "Tool call denied by user.", callbacks, meta, "denied");
+      }
+
+      if (typeof decision === "object") {
+        if (decision.callId === undefined && !Object.prototype.hasOwnProperty.call(decision, "args")) {
+          return finishToolCall(name, "Tool call denied: the permission response was incomplete.", callbacks, meta, "denied");
+        }
+        // Newer consumers echo the call ID. Reject a response for an old prompt
+        // instead of applying it to whichever tool happens to be pending now.
+        if (decision.callId !== undefined && decision.callId !== meta.callId) {
+          return finishToolCall(name, "Tool call denied: stale or mismatched approval response.", callbacks, meta, "denied");
+        }
+        // Partial approval: the user selected a subset of the diff's hunks.
+        if (Object.prototype.hasOwnProperty.call(decision, "args")) {
+          if (!decision.args || typeof decision.args !== "object" || Array.isArray(decision.args)) {
+            return finishToolCall(name, "Tool call denied: the approved arguments were invalid.", callbacks, meta, "denied");
+          }
+          args = decision.args;
+        }
+      }
     }
   }
   let result: string;
@@ -725,11 +786,16 @@ async function runTool(
   } catch (e: any) {
     result = `Error: ${e.message}`;
   }
-  callbacks.onToolResult(name, result);
-  return result;
+  return finishToolCall(name, result, callbacks, meta, result.startsWith("Error:") ? "failed" : "completed");
 }
 
-export interface NormCall { id?: string; name: string; args: any; rawArgs: string; }
+export interface NormCall { id?: string; callId?: string; name: string; args: any; rawArgs: string; detectedAt?: number; }
+
+let localToolCallSequence = 0;
+function nextLocalToolCallId(): string {
+  localToolCallSequence = (localToolCallSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `call_local_${Date.now().toString(36)}_${localToolCallSequence.toString(36)}`;
+}
 
 // Execute a turn's tool calls. Read-only calls run concurrently (so the agent
 // can read/search many files at once); mutating calls run sequentially so
@@ -740,10 +806,34 @@ async function executeCalls(
   callbacks: StreamCallbacks,
   options: ChatOptions
 ): Promise<{ id?: string; name: string; result: string }[]> {
-  // Kick off all read-only calls in parallel.
+  // Surface every call, in model order, before any execution begins. This keeps
+  // slow reads from looking like the model is still thinking and gives clients
+  // stable IDs with which to correlate permissions and results.
+  const metas = calls.map((c, index): ToolCallMeta => {
+    if (!c.callId) c.callId = c.id || nextLocalToolCallId();
+    if (!c.id) c.id = c.callId;
+    const meta: ToolCallMeta = {
+      callId: c.callId,
+      index,
+      phase: "queued",
+      detectedAt: c.detectedAt,
+    };
+    callbacks.onToolCall(c.name, c.rawArgs, meta);
+    return meta;
+  });
+
+  const markRunning = (c: NormCall, index: number): ToolCallMeta => {
+    const meta: ToolCallMeta = { ...metas[index]!, phase: "running", startedAt: Date.now() };
+    metas[index] = meta;
+    callbacks.onToolCallProgress?.(c.name, c.rawArgs, meta);
+    return meta;
+  };
+
+  // Kick off explicitly parallel-safe calls concurrently.
   const preRun = new Map<number, string>();
   await Promise.all(calls.map(async (c, i) => {
-    if (!READONLY_TOOLS.has(c.name)) return;
+    if (!isParallelSafeTool(c.name)) return;
+    markRunning(c, i);
     try { preRun.set(i, await executeTool(c.name, c.args)); }
     catch (e: any) { preRun.set(i, `Error: ${e.message}`); }
   }));
@@ -751,13 +841,13 @@ async function executeCalls(
   const out: { id?: string; name: string; result: string }[] = [];
   for (let i = 0; i < calls.length; i++) {
     const c = calls[i]!;
-    callbacks.onToolCall(c.name, c.rawArgs);
+    const meta = metas[i]!;
     let result: string;
     if (preRun.has(i)) {
       result = preRun.get(i)!;
-      callbacks.onToolResult(c.name, result);
+      finishToolCall(c.name, result, callbacks, meta, result.startsWith("Error:") ? "failed" : "completed");
     } else {
-      result = await runTool(c.name, c.args, callbacks, options);
+      result = await runTool(c.name, c.args, callbacks, options, markRunning(c, i));
     }
     // Feed build/test outcomes to the orchestrator's failure tracker so the
     // two-strike Chrome override can arm/disarm across turns.
@@ -1003,7 +1093,7 @@ async function nativeTurn(
   const cfg = getConfig();
   let assistantText = "";
   let genChars = 0;
-  const toolCallsByIndex = new Map<number, { id: string; name: string; args: string }>();
+  const toolCallsByIndex = new Map<number, { id: string; callId: string; name: string; args: string; detectedAt: number }>();
   const providerToInternalIndex = new Map<number, number>();
   // Hide tool calls the model PRINTS as ```json blocks (qwen-coder does this) from
   // the live display, while keeping the full text for parsing/the fallback.
@@ -1077,7 +1167,8 @@ async function nativeTurn(
 
           let entry = toolCallsByIndex.get(internalIdx);
           if (!entry) {
-            entry = { id: tc.id || `call_${Date.now()}_${internalIdx}`, name: "", args: "" };
+            const initialId = tc.id || nextLocalToolCallId();
+            entry = { id: initialId, callId: initialId, name: "", args: "", detectedAt: Date.now() };
             toolCallsByIndex.set(internalIdx, entry);
           }
           if (tc.id) entry.id = tc.id;
@@ -1087,7 +1178,12 @@ async function nativeTurn(
             genChars += tc.function.arguments.length;
           }
           if (entry.name) {
-            callbacks.onToolCallProgress?.(entry.name, entry.args);
+            callbacks.onToolCallProgress?.(entry.name, entry.args, {
+              callId: entry.callId,
+              index: internalIdx,
+              phase: "arguments",
+              detectedAt: entry.detectedAt,
+            });
           }
         }
       }
@@ -1223,7 +1319,7 @@ async function nativeTurn(
   const norm: NormCall[] = toolCalls.map(tc => {
     let args: any = {};
     try { args = JSON.parse(tc.args || "{}"); } catch {}
-    return { id: tc.id, name: canonicalToolName(tc.name), args, rawArgs: tc.args };
+    return { id: tc.id, callId: tc.callId, name: canonicalToolName(tc.name), args, rawArgs: tc.args, detectedAt: tc.detectedAt };
   });
   const results = await executeCalls(norm, callbacks, options);
   for (const r of results) history.push({ role: "tool", tool_call_id: r.id!, content: r.result });

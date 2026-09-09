@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync } from "fs";
-import { resolve, join, dirname, relative } from "path";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync, statSync, mkdirSync, realpathSync } from "fs";
+import { resolve, join, dirname, relative, isAbsolute, sep } from "path";
 import { glob } from "glob";
 import { spawnSync } from "child_process";
 import { getConfig } from "../config";
@@ -24,9 +24,52 @@ import { searchViaChrome } from "../web-search";
 import { isIncognito, incognitoBlock } from "../incognito";
 import { generateImage } from "../imagegen";
 
+function isWithinPath(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/**
+ * Resolve a model-supplied path while enforcing the configured workspace as a
+ * hard boundary. The real-path ancestor check also blocks an in-workspace
+ * symlink from tunnelling reads or writes to a location outside the project.
+ */
+export function resolveWorkspacePath(p = "."): string {
+  const configuredRoot = resolve(getConfig().cwd);
+  const candidate = resolve(configuredRoot, p || ".");
+  if (!isWithinPath(configuredRoot, candidate)) {
+    throw new Error(`Path is outside the workspace: ${JSON.stringify(p)}. Tool paths must stay within ${configuredRoot}.`);
+  }
+
+  // Resolve the nearest existing ancestor. For a new file this catches a
+  // symlinked parent; for an existing file it catches the file symlink itself.
+  const realRoot = existsSync(configuredRoot) ? realpathSync.native(configuredRoot) : configuredRoot;
+  let probe = candidate;
+  while (!existsSync(probe)) {
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  if (existsSync(probe)) {
+    const realAncestor = realpathSync.native(probe);
+    if (!isWithinPath(realRoot, realAncestor)) {
+      throw new Error(`Path resolves outside the workspace through a symlink: ${JSON.stringify(p)}.`);
+    }
+  }
+  return candidate;
+}
+
 function resolvePath(p: string): string {
-  if (!p) return getConfig().cwd;
-  return resolve(getConfig().cwd, p);
+  return resolveWorkspacePath(p || ".");
+}
+
+function assertWorkspaceGlob(pattern: string): void {
+  // A glob is evaluated by the library before we can inspect its matches, so
+  // reject traversal syntax up front rather than filtering leaked results later.
+  const segments = pattern.replace(/\\/g, "/").split("/");
+  if (isAbsolute(pattern) || segments.includes("..")) {
+    throw new Error(`Glob pattern is outside the workspace: ${JSON.stringify(pattern)}.`);
+  }
 }
 
 // When a path doesn't resolve, walk it from the cwd segment-by-segment and report
@@ -270,6 +313,7 @@ export async function globFiles(args: { pattern?: string; cwd?: string }): Promi
     return `Error: glob_files needs a "pattern" argument — a glob like "**/*.js", "src/**/*.ts", or "*.json". ` +
       `(To list a folder's contents instead, use list_dir.)`;
   }
+  assertWorkspaceGlob(args.pattern);
   const cwd = args.cwd ? resolvePath(args.cwd) : getConfig().cwd;
   try {
     const matches = await glob(args.pattern, {
@@ -293,6 +337,7 @@ export async function grepFiles(args: {
   context?: number;
 }): Promise<string> {
   const searchPath = args.path ? resolvePath(args.path) : getConfig().cwd;
+  if (args.glob) assertWorkspaceGlob(args.glob);
   const flags = args.case_insensitive ? "gi" : "g";
   let re: RegExp;
   try {
@@ -467,7 +512,7 @@ export async function runServer(args: { command: string; cwd?: string; wait?: nu
   // Don't start a DUPLICATE: if the same command is already running here, reuse it
   // (otherwise repeated "let me start the server" calls pile up processes that all
   // fight for the same port).
-  const dir = args.cwd ? resolve(getConfig().cwd, args.cwd) : getConfig().cwd;
+  const dir = args.cwd ? resolveWorkspacePath(args.cwd) : getConfig().cwd;
   const existing = listServers().find(p => p.status === "running" && p.command.trim() === args.command.trim() && p.cwd === dir);
   if (existing) {
     const recent = serverLogs(existing.id, 20).join("\n");
@@ -929,12 +974,13 @@ export async function generateImageTool(args: {
   const prompt = (args.prompt ?? "").trim();
   if (!prompt) return "Error: a prompt is required (describe the image to generate).";
   try {
+    const outPath = args.path ? resolveWorkspacePath(args.path) : undefined;
     const r = await generateImage({
       prompt,
       negativePrompt: args.negative_prompt,
       width: args.width, height: args.height,
       steps: args.steps, cfgScale: args.cfg_scale,
-      seed: args.seed, model: args.model, outPath: args.path,
+      seed: args.seed, model: args.model, outPath,
     }, undefined, onNotice);
     const rel = relative(getConfig().cwd, r.path) || r.path;
     const swap = r.swap.unloaded.length ? ` Freed VRAM by unloading ${r.swap.unloaded.join(", ")}; it is reloading now.` : "";
@@ -953,12 +999,13 @@ export async function generateImageTool(args: {
 export async function executeTool(name: string, args: any, onNotice?: (s: string) => void): Promise<string> {
   name = canonicalToolName(name);
   args = normalizeArgs(args);
-  switch (name) {
+  try {
+    switch (name) {
     case "read_file": return readFile(args);
     case "write_file": return writeFile(args);
     case "edit_file": return editFile(args);
-    case "glob_files": return globFiles(args);
-    case "grep_files": return grepFiles(args);
+    case "glob_files": return await globFiles(args);
+    case "grep_files": return await grepFiles(args);
     case "list_dir": return listDir(args);
     case "bash": return bashExec(args);
     case "delete_file": return deleteFile(args);
@@ -1004,6 +1051,9 @@ export async function executeTool(name: string, args: any, onNotice?: (s: string
     case "browser_performance": return await browserPerformanceTool();
     case "search_via_chrome": return await searchViaChromeTool(args);
     case "generate_image": return await generateImageTool(args, onNotice);
-    default: return `Error: Unknown tool: ${name}`;
+      default: return `Error: Unknown tool: ${name}`;
+    }
+  } catch (e: any) {
+    return `Error: ${e?.message ?? String(e)}`;
   }
 }
