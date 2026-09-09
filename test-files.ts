@@ -1,4 +1,7 @@
-import { listDirEntries, expandSelection, readFilesAsContext } from "./src/files";
+import {
+  listDirEntries, expandSelection, readFilesAsContext,
+  isRootDir, listDrives, normalizeBrowsePath,
+} from "./src/files";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -33,6 +36,23 @@ check("expanding a single file returns it", expandSelection([join(root, "index.j
 const res = readFilesAsContext([join(root, "index.js"), join(root, "bin.dat")], root);
 check("includes the text file with relpath", res.block.includes("index.js") && res.block.includes("console.log(1)"));
 check("skips the binary file", res.included.length === 1 && res.skipped >= 1);
+
+// isRootDir and normalizeBrowsePath
+check("isRootDir identifies C:\\\\ as root on Windows", isRootDir("C:\\") === true);
+check("isRootDir identifies / as root", isRootDir("/") === true);
+check("isRootDir identifies non-root dirs correctly", isRootDir(root) === false);
+check("normalizeBrowsePath normalizes drive letter 'C:' to 'c:\\\\'", normalizeBrowsePath("C:").toLowerCase() === "c:\\");
+check("normalizeBrowsePath normalizes drive letter 'c:' to 'c:\\\\'", normalizeBrowsePath("c:").toLowerCase() === "c:\\");
+check("normalizeBrowsePath keeps subfolder path", normalizeBrowsePath("C:\\Users").toLowerCase() === "c:\\users");
+
+// listDrives
+if (process.platform === "win32") {
+  const drives = listDrives();
+  check("listDrives returns at least C:\\ on Windows", drives.some(d => d.toUpperCase() === "C:\\"));
+  const cEntries = listDirEntries("C:\\");
+  check("listDirEntries on C:\\ hides '..' (since it is root)", !cEntries.some(e => e.name === ".."));
+  check("listDirEntries on C:\\ lists directories (e.g. Users or Windows)", cEntries.some(e => e.name.toLowerCase() === "users" || e.name.toLowerCase() === "windows"));
+}
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\n${fail === 0 ? "FILES OK" : "FILES FAILED"}: ${pass} passed, ${fail} failed`);

@@ -3,300 +3,165 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>local-cli</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: "class",
-      theme: {
-        extend: {
-          colors: {
-            bg: "#0a0a0a",
-            surface: "#121212",
-            panel: "#18181b",
-            panel2: "#27272a",
-            edge: "#2a2a2d",
-            ink: "#f4f4f5",
-            dim: "#8e8e93",
-            primary: "#ffffff",
-            accent: "#e4e4e7",
-            teal: "#d4d4d8",
-            grn: "#22c55e",
-            warn: "#f59e0b",
-            danger: "#ef4444",
-            incog: "#a78bfa",
-            incogdeep: "#1a1626",
-          },
-          fontFamily: {
-            sans: ["Geist", "Inter", "system-ui", "sans-serif"],
-            mono: ["Geist Mono", "JetBrains Mono", "Consolas", "monospace"],
-          },
-          keyframes: {
-            rise: { "0%": { opacity: 0, transform: "translateY(8px)" }, "100%": { opacity: 1, transform: "none" } },
-            pop: { "0%": { opacity: 0, transform: "scale(.96)" }, "100%": { opacity: 1, transform: "scale(1)" } },
-            slidein: { "0%": { opacity: 0, transform: "translateX(-10px)" }, "100%": { opacity: 1, transform: "none" } },
-            shimmer: { "100%": { transform: "translateX(100%)" } },
-            blink: { "0%,100%": { opacity: 1 }, "50%": { opacity: 0 } },
-          },
-          animation: {
-            rise: "rise .22s ease both", pop: "pop .16s ease both", slidein: "slidein .2s ease both",
-            blink: "blink 1s step-end infinite",
-          },
-        },
-      },
-    };
-  </script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&family=Geist:wght@100..900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <meta name="color-scheme" content="dark" />
+  <title>local-cli workbench</title>
+  <link rel="stylesheet" href="/tailwind.css" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body class="bg-bg text-ink font-sans antialiased selection:bg-zinc-800 selection:text-white">
-  <div id="app" class="flex h-screen overflow-hidden p-3 gap-3">
+<body class="bg-bg text-ink font-sans antialiased selection:bg-cyan-950 selection:text-white">
+  <a class="skip-link" href="#messages">Skip to activity</a>
 
-    <!-- Sidebar (Left Column) -->
-    <aside id="sidebar" class="w-60 xl:w-72 shrink-0 rounded-3xl border border-edge bg-surface flex flex-col transition-all duration-200 overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
-      <div class="p-4 flex items-center gap-2 border-b border-edge/60">
-        <span class="text-white font-mono font-bold tracking-widest text-lg">CCLI</span>
-        <span class="text-dim text-[11px] font-mono border border-edge rounded-full px-2 py-0.5">LOCAL</span>
-        <span id="conn" class="ml-auto w-2.5 h-2.5 rounded-full bg-danger border border-black" title="connection status"></span>
-      </div>
-
-      <!-- Folder Selector -->
-      <button id="folder-btn" class="mx-3 my-4 text-left px-3.5 py-2.5 rounded-2xl bg-panel hover:bg-panel2 border border-edge transition group">
-        <div class="flex items-center gap-2 text-[10px] uppercase tracking-wider font-semibold text-dim">
-          <i data-lucide="folder" class="w-3.5 h-3.5"></i> working folder
-          <i data-lucide="pencil" class="w-3 h-3 ml-auto opacity-0 group-hover:opacity-100 transition-opacity"></i>
+  <div id="app" class="workbench-shell">
+    <aside id="sidebar" class="workbench-sidebar flex flex-col overflow-hidden" aria-label="Workspace and conversations">
+      <div class="brand-bar">
+        <div class="brand-mark" aria-hidden="true">LC</div>
+        <div class="min-w-0">
+          <div class="brand-name">local-cli</div>
+          <div class="brand-kind">operator console</div>
         </div>
-        <div id="cwd" class="font-mono text-[11px] text-white truncate mt-1">—</div>
-      </button>
-
-      <!-- Chats Header -->
-      <div class="px-4 pb-2 flex items-center justify-between text-[11px] uppercase tracking-wider font-semibold text-dim">
-        <span class="flex items-center gap-1.5"><i data-lucide="messages-square" class="w-3.5 h-3.5"></i> Chats</span>
-        <button id="new-chat" class="flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full bg-zinc-900 border border-edge hover:bg-zinc-850 hover:text-white transition">
-          <i data-lucide="plus" class="w-3 h-3"></i> New
-        </button>
+        <span id="conn" class="connection-dot ml-auto bg-danger" role="status" aria-label="Disconnected" title="Connection status"></span>
       </div>
 
-      <!-- Chats List -->
-      <div id="sessions" class="flex-1 overflow-y-auto px-2 space-y-1 py-1"></div>
+      <section class="sidebar-section" aria-labelledby="workspace-label">
+        <div id="workspace-label" class="section-kicker">Workspace</div>
+        <button id="folder-btn" class="workspace-switch group" type="button" aria-label="Choose working folder">
+          <i data-lucide="folder" class="w-4 h-4 shrink-0" aria-hidden="true"></i>
+          <span id="cwd" class="workspace-path">—</span>
+          <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 ml-auto shrink-0 text-dim" aria-hidden="true"></i>
+        </button>
+      </section>
 
-      <!-- Sidebar footer / commands indicator -->
-      <div class="p-3 border-t border-edge/60 text-center">
-        <button id="sidebar-commands" class="w-full py-2 rounded-full border border-edge text-[11px] uppercase tracking-widest font-bold hover:bg-zinc-900 hover:text-white transition">
-          <i data-lucide="slash" class="w-3.5 h-3.5 inline mr-1"></i> Command Menu
+      <section class="sidebar-section sessions-section" aria-labelledby="sessions-label">
+        <div class="section-heading-row">
+          <h2 id="sessions-label" class="section-kicker">Conversations</h2>
+          <button id="new-chat" class="quiet-action" type="button" title="Start a new conversation">
+            <i data-lucide="plus" class="w-3.5 h-3.5" aria-hidden="true"></i><span>New</span>
+          </button>
+        </div>
+        <div id="sessions" class="sessions-list overflow-y-auto" role="list"></div>
+      </section>
+
+      <div class="sidebar-footer">
+        <button id="sidebar-commands" class="command-entry" type="button">
+          <span class="command-glyph" aria-hidden="true">/</span><span>Command menu</span><kbd>Ctrl K</kbd>
         </button>
       </div>
     </aside>
 
-    <!-- Chat Column (Center Column) -->
-    <div class="flex-1 flex flex-col min-w-0 rounded-3xl border border-edge bg-surface overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
-      <header class="min-h-14 shrink-0 border-b border-edge/60 flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2">
-        <button id="sidebar-toggle" class="text-dim hover:text-white transition" title="Toggle Sidebar"><i data-lucide="panel-left" class="w-4 h-4"></i></button>
-
-        <div class="flex items-center gap-1.5">
-          <i data-lucide="cpu" class="w-4 h-4 text-dim"></i>
-          <select id="model" class="bg-zinc-900 border border-edge rounded-full px-3 py-1 text-xs font-mono text-white max-w-[240px] focus:outline-none focus:border-zinc-500"></select>
-          <button id="model-info" class="text-dim hover:text-white transition" title="Model details"><i data-lucide="info" class="w-4 h-4"></i></button>
-        </div>
-
-        <div id="mode" class="flex bg-zinc-900 border border-edge rounded-full p-0.5 gap-0.5 text-[11px] font-semibold text-dim">
-          <button data-mode="chat" class="mode-btn px-3 py-1 transition-colors" title="Talk only — answers in the message, never creates or edits files">chat</button>
-          <button data-mode="normal" class="mode-btn px-3 py-1 transition-colors" title="Build, asking permission per action">normal</button>
-          <button data-mode="plan" class="mode-btn px-3 py-1 transition-colors">plan</button>
-          <button data-mode="auto" class="mode-btn px-3 py-1 transition-colors">auto</button>
-          <button data-mode="debug" class="mode-btn px-3 py-1 transition-colors" title="Investigate, fix & verify using logs, console, network">debug</button>
-        </div>
-
-        <button id="think-btn" class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-edge text-dim hover:text-white transition" title="Toggle reasoning text">
-          <i data-lucide="brain" class="w-3.5 h-3.5"></i> think
-        </button>
-
-        <button id="incognito-btn" class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-edge text-dim hover:text-white transition" title="Incognito — nothing written to disk, nothing sent off this machine">
-          <i data-lucide="venetian-mask" class="w-3.5 h-3.5"></i> incognito
-        </button>
-
-        <!-- Right header items -->
-        <div class="ml-auto flex items-center gap-3">
-          <span id="ext-badge" class="hidden items-center gap-1.5 text-[11px] text-zinc-350" title="Browser extension connected — ask me to open and act on web pages">
-            <span class="w-1.5 h-1.5 rounded-full bg-grn animate-pulse"></span>
-            <i data-lucide="globe" class="w-3.5 h-3.5 text-dim"></i> <span class="ext-text">live browser</span>
-          </span>
-          <button id="compact-btn" class="text-dim hover:text-white transition" title="Compact conversation"><i data-lucide="archive" class="w-4 h-4"></i></button>
-          <div class="flex items-center gap-1.5 font-mono text-[11px] text-dim border-l border-edge pl-3">
-            <i data-lucide="gauge" class="w-3.5 h-3.5"></i>
-            <span id="ctx-used" class="text-zinc-350">0</span><span>/</span><span id="ctx-limit">0</span>
-            <span id="ctx-pct">(0%)</span>
+    <section id="workbench-main" class="workbench-main min-w-0" aria-label="Agent workbench">
+      <header class="operator-bar" aria-label="Run controls">
+        <div class="operator-primary">
+          <button id="sidebar-toggle" class="icon-action" type="button" title="Toggle conversations" aria-label="Toggle conversations panel">
+            <i data-lucide="panel-left" class="w-4 h-4" aria-hidden="true"></i>
+          </button>
+          <div class="model-control">
+            <label for="model">Model</label>
+            <select id="model" class="model-select" aria-label="Model"></select>
+            <button id="model-info" class="icon-action compact" type="button" title="Model details" aria-label="Show model details"><i data-lucide="info" class="w-4 h-4" aria-hidden="true"></i></button>
           </div>
-          <button id="dashboard-toggle" class="text-dim hover:text-white transition border-l border-edge pl-3" title="Toggle Dashboard"><i data-lucide="panel-right" class="w-4 h-4"></i></button>
+          <div id="mode" class="mode-switch" role="group" aria-label="Agent mode">
+            <button data-mode="chat" class="mode-btn" type="button" title="Talk only; never creates or edits files">Chat</button>
+            <button data-mode="normal" class="mode-btn" type="button" title="Build, asking permission per action">Build</button>
+            <button data-mode="plan" class="mode-btn" type="button" title="Create a plan before changing files">Plan</button>
+            <button data-mode="auto" class="mode-btn" type="button" title="Proceed automatically within configured permissions">Auto</button>
+            <button data-mode="debug" class="mode-btn" type="button" title="Investigate, fix, and verify with runtime evidence">Debug</button>
+          </div>
+        </div>
+
+        <div class="operator-secondary">
+          <button id="think-btn" class="state-action" type="button" title="Toggle model reasoning generation"><i data-lucide="brain" class="w-3.5 h-3.5" aria-hidden="true"></i><span>Reasoning</span></button>
+          <button id="incognito-btn" class="state-action" type="button" title="Incognito: do not save this conversation"><i data-lucide="venetian-mask" class="w-3.5 h-3.5" aria-hidden="true"></i><span>Private</span></button>
+          <span id="ext-badge" class="extension-state hidden" title="Browser extension connected"><span class="status-pip bg-grn" aria-hidden="true"></span><i data-lucide="globe" class="w-3.5 h-3.5" aria-hidden="true"></i><span class="ext-text">Browser linked</span></span>
+          <button id="compact-btn" class="icon-action" type="button" title="Compact conversation" aria-label="Compact conversation"><i data-lucide="archive" class="w-4 h-4" aria-hidden="true"></i></button>
+          <div class="context-readout" aria-label="Context window usage"><span class="context-label">CTX</span><span id="ctx-used">0</span><span aria-hidden="true">/</span><span id="ctx-limit">0</span><span id="ctx-pct">(0%)</span></div>
+          <button id="dashboard-toggle" class="icon-action" type="button" title="Toggle inspector" aria-label="Toggle inspector panel"><i data-lucide="panel-right" class="w-4 h-4" aria-hidden="true"></i></button>
         </div>
       </header>
 
-      <!-- Incognito banner -->
-      <div id="incog-bar" class="hidden shrink-0 border-b border-incog/25 bg-incogdeep px-4 md:px-8 py-2.5">
-        <div class="max-w-4xl mx-auto flex items-center gap-3">
-          <i data-lucide="venetian-mask" class="w-4 h-4 text-incog shrink-0"></i>
-          <div class="min-w-0 flex-1">
-            <div class="text-[12px] text-incog font-semibold">Incognito — this chat is not being saved</div>
-            <div id="incog-sub" class="text-[11px] text-zinc-400 truncate">No transcript, memory, profile or undo snapshot. Lookups run in a throwaway browser. File edits still change your disk.</div>
-          </div>
-          <button id="incog-what" class="shrink-0 text-[11px] px-3 py-1 rounded-full border border-incog/40 text-incog hover:bg-incog/10 transition">What this does</button>
-          <button id="incog-off" class="shrink-0 text-[11px] px-3 py-1 rounded-full border border-edge text-dim hover:text-white transition">Turn off</button>
-        </div>
+      <div id="incog-bar" class="incognito-banner hidden" role="status">
+        <i data-lucide="venetian-mask" class="w-4 h-4 text-incog shrink-0" aria-hidden="true"></i>
+        <div class="min-w-0 flex-1"><div class="banner-title">Private conversation</div><div id="incog-sub" class="banner-copy">Transcript, memory, profile, and undo snapshots are disabled. File edits still change your disk.</div></div>
+        <button id="incog-what" class="banner-action" type="button">Details</button><button id="incog-off" class="banner-action" type="button">Turn off</button>
       </div>
 
-      <!-- Messages Stream -->
-      <main id="messages" class="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 scroll-smooth"></main>
+      <div class="activity-frame">
+        <div class="activity-label" aria-hidden="true"><span>Activity</span><span class="activity-rule"></span></div>
+        <main id="messages" class="activity-stream overflow-y-auto scroll-smooth" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation and run activity"></main>
+      </div>
 
-      <!-- Input Footer -->
-      <div class="px-4 md:px-8 pb-5 pt-3 border-t border-edge/60">
-        <!-- Possible-loop warning: advisory, the turn keeps running -->
-        <div id="loop-warn" class="hidden items-center gap-3 text-[11px] mb-2.5 border border-warn/40 bg-warn/10 px-4 py-2 rounded-2xl max-w-4xl mx-auto">
-          <i data-lucide="rotate-cw" class="w-3.5 h-3.5 text-warn shrink-0"></i>
-          <span id="loop-warn-text" class="text-warn flex-1 min-w-0"></span>
-          <button id="loop-warn-stop" class="shrink-0 px-3 py-1 rounded-full bg-danger text-white font-bold hover:bg-red-600 transition">Stop now</button>
-          <button id="loop-warn-ok" class="shrink-0 px-3 py-1 rounded-full border border-warn/40 text-warn hover:bg-warn/10 transition">It's fine</button>
+      <footer class="composer-region">
+        <div id="loop-warn" class="run-warning hidden" role="alert">
+          <i data-lucide="rotate-cw" class="w-4 h-4 text-warn shrink-0" aria-hidden="true"></i><span id="loop-warn-text" class="flex-1 min-w-0"></span>
+          <button id="loop-warn-stop" class="danger-action" type="button">Stop run</button><button id="loop-warn-ok" class="secondary-action" type="button">Continue</button>
         </div>
-        <div id="live" class="hidden items-center gap-2 font-mono text-[11px] text-zinc-400 mb-2.5 border border-edge bg-panel px-4 py-2 rounded-full w-fit max-w-full mx-auto"></div>
-        <div id="img-previews" class="hidden flex-wrap gap-2 mb-2.5 max-w-4xl mx-auto"></div>
-        <form id="form" class="flex items-end gap-2 max-w-4xl mx-auto">
-          <button id="attach" type="button" class="shrink-0 h-11 w-11 grid place-items-center rounded-full border border-edge bg-zinc-900 text-dim hover:text-white hover:border-zinc-500 transition" title="Attach files">
-            <i data-lucide="paperclip" class="w-4 h-4"></i>
-          </button>
-          <textarea id="input" rows="1" placeholder="Message local-cli…  (Enter to send · Shift+Enter newline · Ctrl+V pastes images)"
-            class="flex-1 resize-none bg-zinc-900 border border-edge rounded-3xl px-5 py-3 text-[14px] leading-relaxed max-h-52 text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition"></textarea>
-          <button id="send" type="submit" class="shrink-0 h-11 px-6 rounded-full bg-white text-black font-bold hover:bg-zinc-200 transition flex items-center gap-1.5">
-            <i data-lucide="send-horizontal" class="w-4 h-4"></i><span class="send-text">Send</span>
-          </button>
-          <button id="stop" type="button" class="hidden shrink-0 h-11 px-6 rounded-full bg-danger text-white font-bold hover:bg-red-650 transition flex items-center gap-1.5">
-            <i data-lucide="square" class="w-4 h-4"></i><span class="stop-text">Stop</span>
-          </button>
+        <section id="run-telemetry" class="run-telemetry" aria-label="Current run status"><div id="live" class="live-status hidden" role="status" aria-live="polite"></div></section>
+        <div id="img-previews" class="image-previews hidden"></div>
+        <form id="form" class="composer" aria-label="Send a message">
+          <button id="attach" type="button" class="composer-icon" title="Attach files" aria-label="Attach files"><i data-lucide="paperclip" class="w-4 h-4" aria-hidden="true"></i></button>
+          <label class="sr-only" for="input">Message local-cli</label>
+          <textarea id="input" rows="1" placeholder="Describe the outcome, ask a question, or enter / for commands" class="composer-input" aria-describedby="composer-hint"></textarea>
+          <button id="send" type="submit" class="send-action"><i data-lucide="send-horizontal" class="w-4 h-4" aria-hidden="true"></i><span class="send-text">Send</span></button>
+          <button id="stop" type="button" class="stop-action hidden"><i data-lucide="square" class="w-3.5 h-3.5" aria-hidden="true"></i><span class="stop-text">Stop</span></button>
         </form>
+        <div id="composer-hint" class="composer-hint">Enter to send · Shift+Enter for a new line · Paste images directly</div>
+      </footer>
+    </section>
+
+    <aside id="dashboard" class="workbench-inspector flex flex-col overflow-hidden" aria-label="Workspace inspector">
+      <div class="inspector-heading">
+        <div><div class="section-kicker">Inspector</div><div class="inspector-context">Workspace evidence</div></div>
+        <i data-lucide="scan-search" class="w-4 h-4 text-dim" aria-hidden="true"></i>
       </div>
-    </div>
+      <nav class="inspector-tabs" aria-label="Inspector views">
+        <button data-dash-tab="browser" class="dash-tab" type="button"><i data-lucide="globe" class="w-3.5 h-3.5" aria-hidden="true"></i><span>Browser</span></button>
+        <button data-dash-tab="runtime" class="dash-tab" type="button"><i data-lucide="square-terminal" class="w-3.5 h-3.5" aria-hidden="true"></i><span>Runtime</span></button>
+        <button data-dash-tab="profiles" class="dash-tab" type="button"><i data-lucide="user-round-cog" class="w-3.5 h-3.5" aria-hidden="true"></i><span>Profiles</span></button>
+        <button data-dash-tab="system" class="dash-tab" type="button"><i data-lucide="cpu" class="w-3.5 h-3.5" aria-hidden="true"></i><span>System</span></button>
+      </nav>
 
-    <!-- Workspace Dashboard (Right Column) -->
-    <aside id="dashboard" class="w-[340px] xl:w-[420px] shrink-0 rounded-3xl border border-edge bg-surface flex flex-col transition-all duration-200 overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
-      <!-- Dashboard Tabs Header -->
-      <div class="flex gap-1 p-2.5 border-b border-edge/60 shrink-0">
-        <button data-dash-tab="browser" class="dash-tab flex-1 py-2 transition flex items-center justify-center gap-1.5">
-          <i data-lucide="globe" class="w-3.5 h-3.5"></i>
-          <span class="text-[9px] uppercase tracking-wider font-bold">Browser</span>
-        </button>
-        <button data-dash-tab="runtime" class="dash-tab flex-1 py-2 transition flex items-center justify-center gap-1.5">
-          <i data-lucide="play" class="w-3.5 h-3.5"></i>
-          <span class="text-[9px] uppercase tracking-wider font-bold">Runtime</span>
-        </button>
-        <button data-dash-tab="profiles" class="dash-tab flex-1 py-2 transition flex items-center justify-center gap-1.5">
-          <i data-lucide="user-round-cog" class="w-3.5 h-3.5"></i>
-          <span class="text-[9px] uppercase tracking-wider font-bold">Profiles</span>
-        </button>
-        <button data-dash-tab="system" class="dash-tab flex-1 py-2 transition flex items-center justify-center gap-1.5">
-          <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
-          <span class="text-[9px] uppercase tracking-wider font-bold">System</span>
-        </button>
-      </div>
-
-      <!-- Dashboard Tab Views Container -->
-      <div id="dash-body" class="flex-1 overflow-y-auto p-4 space-y-4">
-        
-        <!-- Browser View -->
-        <div id="dash-view-browser" class="dash-view space-y-3">
-          <div class="flex items-center gap-2">
-            <span class="text-xs font-mono font-bold uppercase tracking-wider text-white">Browser Control</span>
-            <button id="dash-b-help" class="text-dim hover:text-white transition" title="How browser control works"><i data-lucide="circle-help" class="w-3.5 h-3.5"></i></button>
-            <span id="dash-b-status" class="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-dim border border-edge">CDP Session</span>
+      <div id="dash-body" class="inspector-body overflow-y-auto">
+        <section id="dash-view-browser" class="dash-view inspector-view" aria-label="Browser control">
+          <div class="view-title-row">
+            <h2>Browser control</h2>
+            <button id="dash-b-help" class="icon-action compact" type="button" title="How browser control works" aria-label="Browser control help"><i data-lucide="circle-help" class="w-3.5 h-3.5" aria-hidden="true"></i></button>
+            <span id="dash-b-status" class="status-tag">CDP session</span>
           </div>
-          
-          <!-- Address Bar -->
-          <div class="flex gap-1.5">
-            <input id="dash-b-url" placeholder="http://localhost:3000" class="flex-1 bg-zinc-900 border border-edge rounded-full px-3.5 py-2 text-xs font-mono text-white focus:outline-none focus:border-zinc-500" />
-            <button id="dash-b-open" class="px-3.5 py-2 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Go</button>
-            <button id="dash-b-live-btn" class="px-2.5 py-2 rounded-full border border-edge text-dim hover:text-white hover:bg-zinc-900 transition" title="Toggle live view (stream the page while the agent works)"><i data-lucide="eye" class="w-4 h-4"></i></button>
-            <button id="dash-b-shot" class="px-2.5 py-2 rounded-full border border-edge text-dim hover:text-white hover:bg-zinc-900 transition" title="Refresh screenshot & content"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button>
-            <button id="dash-b-close" class="px-2.5 py-2 rounded-full border border-edge text-dim hover:text-danger hover:border-danger transition" title="Close controlled browser"><i data-lucide="x-circle" class="w-4 h-4"></i></button>
+          <div class="address-bar"><label class="sr-only" for="dash-b-url">Browser address</label><input id="dash-b-url" placeholder="http://localhost:3000" class="address-input" /><button id="dash-b-open" class="primary-compact" type="button">Open</button></div>
+          <div class="browser-actions" aria-label="Browser actions">
+            <button id="dash-b-live-btn" class="tool-action" type="button" title="Toggle live view"><i data-lucide="eye" class="w-4 h-4" aria-hidden="true"></i><span>Live</span></button>
+            <button id="dash-b-shot" class="tool-action" type="button" title="Refresh screenshot and content"><i data-lucide="refresh-cw" class="w-4 h-4" aria-hidden="true"></i><span>Refresh</span></button>
+            <button id="dash-b-close" class="tool-action danger" type="button" title="Close controlled browser"><i data-lucide="x-circle" class="w-4 h-4" aria-hidden="true"></i><span>Close</span></button>
           </div>
-
-          <!-- What the agent is doing in the browser right now -->
-          <div id="dash-b-action" class="hidden items-center gap-2 text-[11px] font-mono text-white bg-zinc-900 border border-edge rounded-full px-3.5 py-1.5">
-            <span class="spin shrink-0"></span><span id="dash-b-action-text" class="truncate"></span>
+          <div id="dash-b-action" class="browser-operation hidden" role="status"><span class="spin shrink-0"></span><span id="dash-b-action-text" class="truncate"></span></div>
+          <div id="dash-b-meta" class="browser-meta"></div>
+          <div id="dash-b-viewport" class="browser-viewport">
+            <div id="dash-b-live" class="viewport-live hidden"><span class="status-pip bg-danger" aria-hidden="true"></span>live</div>
+            <div id="dash-b-viewport-empty" class="viewport-empty"><i data-lucide="app-window" class="w-8 h-8" aria-hidden="true"></i><p>No browser viewport</p><p>Open a local URL or ask the agent to browse.</p></div>
+            <img id="dash-b-viewport-img" class="w-full h-auto object-contain hidden" alt="Current controlled browser viewport" />
           </div>
+          <div class="evidence-drawer"><button id="dash-b-text-toggle" class="evidence-toggle" type="button"><span>Extracted page text</span><i data-lucide="chevron-down" class="w-4 h-4 tr-icon" aria-hidden="true"></i></button><div id="dash-b-view" class="evidence-content hidden"></div></div>
+        </section>
 
-          <div id="dash-b-meta" class="text-[11px] font-mono text-zinc-400 break-all bg-zinc-950 px-3 py-1.5 rounded-xl"></div>
+        <section id="dash-view-runtime" class="dash-view inspector-view hidden" aria-label="Runtime">
+          <div class="inspector-block"><h2><i data-lucide="server" class="w-3.5 h-3.5" aria-hidden="true"></i>Background servers</h2><div id="dash-servers-list" class="data-stack"></div></div>
+          <div class="inspector-block"><h2><i data-lucide="plug-zap" class="w-3.5 h-3.5" aria-hidden="true"></i>TCP ports</h2><div id="dash-ports-list" class="data-stack"></div></div>
+        </section>
 
-          <!-- Viewport Box -->
-          <div id="dash-b-viewport" class="rounded-2xl border border-edge bg-zinc-950 overflow-hidden min-h-[220px] flex flex-col items-center justify-center relative">
-            <div id="dash-b-live" class="hidden absolute top-2.5 left-2.5 z-10 items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-white bg-black/70 backdrop-blur border border-edge rounded-full px-2.5 py-1">
-              <span class="w-1.5 h-1.5 rounded-full bg-danger animate-pulse"></span> live
-            </div>
-            <div id="dash-b-viewport-empty" class="p-6 text-center text-dim text-xs space-y-1.5">
-              <i data-lucide="globe" class="w-8 h-8 mx-auto stroke-[1.5] text-zinc-700"></i>
-              <p>No active browser viewport.</p>
-              <p class="text-[10px] text-zinc-650">Open a URL or ask the agent to browse a website.</p>
-            </div>
-            <img id="dash-b-viewport-img" class="w-full h-auto object-contain hidden" alt="Browser screenshot" />
-          </div>
+        <section id="dash-view-profiles" class="dash-view inspector-view hidden" aria-label="Coding profiles">
+          <div class="inspector-block"><h2><i data-lucide="user-round-cog" class="w-3.5 h-3.5" aria-hidden="true"></i>Coding profiles</h2><div id="dash-profiles-list" class="data-stack"></div></div>
+          <div class="inspector-block"><label class="field-label" for="dash-learn-name">Learn a project profile</label><div class="inline-field"><input id="dash-learn-name" placeholder="Profile name, e.g. next" class="text-field" /><button id="dash-learn-go" class="primary-compact" type="button">Learn</button></div><p class="field-help">Scans the project stack and layout to create durable agent instructions.</p></div>
+        </section>
 
-          <!-- Page Text (Scrollable drawer) -->
-          <div class="border border-edge rounded-2xl overflow-hidden bg-zinc-950">
-            <button id="dash-b-text-toggle" class="w-full flex items-center justify-between px-4 py-2 text-xs font-bold text-dim bg-zinc-900/60 border-b border-edge/60 hover:text-white transition">
-              <span>PAGE TEXT CONTENTS</span>
-              <i data-lucide="chevron-down" class="w-4 h-4 tr-icon"></i>
-            </button>
-            <div id="dash-b-view" class="hidden p-3.5 max-h-48 overflow-y-auto text-[11px] font-mono text-zinc-400 whitespace-pre-wrap leading-relaxed"></div>
-          </div>
-        </div>
-
-        <!-- Runtime View (Servers & Ports) -->
-        <div id="dash-view-runtime" class="dash-view space-y-5 hidden">
-          <!-- Dev Servers -->
-          <div class="space-y-2">
-            <h3 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5"><i data-lucide="server" class="w-3.5 h-3.5"></i> Background Servers</h3>
-            <div id="dash-servers-list" class="space-y-2"></div>
-          </div>
-          <!-- Ports -->
-          <div class="space-y-2 border-t border-edge pt-4">
-            <h3 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5"><i data-lucide="plug-zap" class="w-3.5 h-3.5"></i> TCP Port Manager</h3>
-            <div id="dash-ports-list" class="space-y-1.5"></div>
-          </div>
-        </div>
-
-        <!-- Profiles View (Styles & Conventions) -->
-        <div id="dash-view-profiles" class="dash-view space-y-4 hidden">
-          <h3 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5"><i data-lucide="user-round-cog" class="w-3.5 h-3.5"></i> Coding Profiles</h3>
-          <div id="dash-profiles-list" class="space-y-1.5"></div>
-          
-          <div class="border-t border-edge pt-4 space-y-2">
-            <h4 class="text-[11px] font-bold text-dim uppercase tracking-wider">Learn Custom Profile</h4>
-            <div class="flex gap-2">
-              <input id="dash-learn-name" placeholder="new profile name (e.g. next)" class="flex-1 bg-zinc-900 border border-edge rounded-full px-3.5 py-2 text-xs text-white focus:outline-none focus:border-zinc-500" />
-              <button id="dash-learn-go" class="px-4 py-2 rounded-full bg-white text-black font-bold text-xs hover:bg-zinc-200 transition">Learn</button>
-            </div>
-            <p class="text-[10px] text-dim">Scans project stack & directory layout to create durable instructions for the agent.</p>
-          </div>
-        </div>
-
-        <!-- System View (Specs & Models) -->
-        <div id="dash-view-system" class="dash-view space-y-4 hidden">
-          <h3 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5"><i data-lucide="cpu" class="w-3.5 h-3.5"></i> System Hardware</h3>
-          <div id="dash-system-content" class="space-y-2"></div>
-        </div>
-
+        <section id="dash-view-system" class="dash-view inspector-view hidden" aria-label="System hardware">
+          <div class="inspector-block"><h2><i data-lucide="cpu" class="w-3.5 h-3.5" aria-hidden="true"></i>System hardware</h2><div id="dash-system-content" class="data-stack"></div></div>
+        </section>
       </div>
     </aside>
-
   </div>
 
-  <!-- Backdrop for mobile drawers -->
-  <div id="backdrop" class="hidden fixed inset-0 bg-black/60 z-30 backdrop-blur-sm"></div>
-
-  <!-- Modal host -->
-  <div id="modal" class="hidden fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm p-4 animate-fadein">
-    <div id="modal-card" class="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-3xl border border-edge bg-surface shadow-2xl animate-pop flex flex-col"></div>
-  </div>
-
+  <div id="backdrop" class="hidden drawer-backdrop" aria-hidden="true"></div>
+  <div id="modal" class="hidden modal-layer" role="presentation"><div id="modal-card" class="modal-card" role="dialog" aria-modal="true" aria-label="Dialog" tabindex="-1"></div></div>
+  <script src="/vendor/lucide.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
